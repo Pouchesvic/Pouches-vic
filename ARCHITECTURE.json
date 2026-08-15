@@ -1,0 +1,12 @@
+{
+  "territories": "Independent operating areas; Victoria/Kelowna/Prince George preloaded.",
+  "products": "Shared master catalog.",
+  "territory_products": "Per-territory inventory, listed/hidden status, featured flag and optional local price override.",
+  "pricing_tiers": "Per-territory quantity pricing.",
+  "delivery_zones": "Per-territory zone fees, free thresholds and editable boundary notes.",
+  "drivers": "Per-territory drivers; no hierarchy unless rules explicitly create one.",
+  "settlement_rules": "Editable per-can and delivery-fee money-flow rules.",
+  "orders": "Territory, customer, zone, driver, payment, fee overrides, totals and status.",
+  "order_items": "Snapshot of items/prices at order time.",
+  "order_adjustments": "Door swaps/returns/free-can inventory adjustments."
+}

@@ -1,320 +1,94 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Pouches Vic</title>
-
 <style>
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  background: #f3f3f1;
-  color: #111;
-  font-family: Arial, Helvetica, sans-serif;
-}
-
-.topbar {
-  background: #111;
-  color: white;
-  text-align: center;
-  padding: 10px;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.container {
-  max-width: 600px;
-  margin: auto;
-  padding: 18px;
-}
-
-.header {
-  background: white;
-  border-radius: 22px;
-  padding: 24px 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 22px;
-}
-
-.logo {
-  font-size: 27px;
-  font-weight: 900;
-  letter-spacing: -1px;
-}
-
-.header-icons {
-  font-size: 23px;
-  letter-spacing: 8px;
-}
-
-.hero {
-  background: white;
-  border-radius: 22px;
-  padding: 40px 24px;
-  text-align: center;
-}
-
-.hero-small {
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: 2px;
-}
-
-.hero h1 {
-  font-size: 37px;
-  line-height: 1.02;
-  margin: 13px 0;
-  font-weight: 900;
-}
-
-.hero p {
-  color: #555;
-  font-size: 16px;
-  line-height: 1.5;
-  margin: 0 auto 25px;
-  max-width: 390px;
-}
-
-.button {
-  display: block;
-  background: #111;
-  color: white;
-  padding: 17px;
-  border-radius: 11px;
-  text-decoration: none;
-  font-weight: 900;
-  letter-spacing: 1px;
-}
-
-.promo {
-  background: #111;
-  color: white;
-  border-radius: 16px;
-  margin-top: 16px;
-  padding: 17px;
-  text-align: center;
-  font-weight: 800;
-}
-
-.section-title {
-  text-align: center;
-  font-size: 29px;
-  font-weight: 900;
-  margin: 37px 0 20px;
-}
-
-.products {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-}
-
-.product {
-  text-align: center;
-}
-
-.product-image {
-  height: 165px;
-  border-radius: 20px;
-  background: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #999;
-  font-weight: bold;
-}
-
-.product h3 {
-  font-size: 15px;
-  margin: 13px 0 8px;
-}
-
-.product-info {
-  display: flex;
-  justify-content: space-between;
-  font-weight: 800;
-  margin: 8px 4px 12px;
-}
-
-.rating {
-  background: white;
-  border: 1px solid #ddd;
-  border-radius: 5px;
-  padding: 5px 7px;
-}
-
-.product-button {
-  display: block;
-  background: #111;
-  color: white;
-  text-decoration: none;
-  padding: 13px 5px;
-  border-radius: 10px;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.brands {
-  background: white;
-  border-radius: 22px;
-  margin-top: 35px;
-  padding: 28px 20px;
-  text-align: center;
-}
-
-.brands h2 {
-  margin-top: 0;
-}
-
-.brand-list {
-  display: flex;
-  justify-content: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.brand {
-  border: 1px solid #ddd;
-  padding: 12px 17px;
-  border-radius: 10px;
-  font-weight: 800;
-}
-
-.reviews {
-  margin-top: 25px;
-  background: #151515;
-  color: white;
-  padding: 27px;
-  border-radius: 22px;
-}
-
-.stars {
-  color: #ffc400;
-  font-size: 20px;
-}
-
-footer {
-  text-align: center;
-  color: #777;
-  font-size: 13px;
-  padding: 35px 10px;
-}
-
-@media (max-width: 380px) {
-  .hero h1 {
-    font-size: 31px;
-  }
-
-  .product-image {
-    height: 145px;
-  }
-}
+*{box-sizing:border-box}body{margin:0;background:#f2f2ef;color:#111;font-family:Arial,Helvetica,sans-serif}.wrap{max-width:680px;margin:auto;padding:16px}.top{background:#111;color:#fff;text-align:center;padding:9px;font-size:11px;font-weight:900}.card{background:#fff;border-radius:22px;padding:20px;margin-bottom:14px}.head{display:flex;align-items:center;justify-content:space-between}.logo{font-size:25px;font-weight:1000}.muted{color:#676767}.hero{text-align:center;padding:36px 22px}.hero h1{font-size:32px;line-height:1.02;margin:8px 0}.hero p{line-height:1.5}.btn{width:100%;border:0;border-radius:11px;background:#111;color:#fff;padding:14px;font-weight:900;cursor:pointer}.secondary{background:#ececec;color:#111}.territory{font-size:12px;font-weight:900;border:1px solid #ddd;border-radius:9px;padding:8px;background:#fff}.section{font-size:27px;text-align:center;margin:28px 0 16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.photo{height:160px;background:#fff;border-radius:17px;display:flex;align-items:center;justify-content:center;overflow:hidden;color:#aaa;font-weight:800}.photo img{width:100%;height:100%;object-fit:cover}.prod h3{font-size:14px;margin:9px 2px 3px;text-transform:uppercase}.small{font-size:11px;color:#666}.row{display:flex;justify-content:space-between;gap:10px;align-items:center}.stock{background:#fff;border:1px solid #ddd;border-radius:7px;padding:4px 6px;font-size:10px}.prod .btn{padding:11px 6px;font-size:11px;margin-top:8px}.cartbar{position:sticky;bottom:10px;display:none;background:#111;color:#fff;border-radius:14px;padding:12px 14px;margin-top:18px;box-shadow:0 8px 25px #0003;z-index:5}.cartbar.show{display:flex;justify-content:space-between;align-items:center}.cartbar button{border:0;background:#fff;border-radius:8px;font-weight:900;padding:9px 11px}.sheet{display:none;position:fixed;inset:0;background:#0008;z-index:30;align-items:flex-end}.sheet.open{display:flex}.sheetbox{background:#fff;width:100%;max-height:90vh;overflow:auto;border-radius:22px 22px 0 0;padding:20px}.item{display:grid;grid-template-columns:1fr 75px;gap:10px;border-bottom:1px solid #eee;padding:9px 0}.item input,.field input,.field select,.field textarea{width:100%;border:1px solid #d7d7d7;border-radius:10px;padding:11px;font-size:16px}.field{margin:10px 0}.field label{display:block;font-size:11px;font-weight:900;margin-bottom:5px}.total{font-size:21px;font-weight:900}.notice{background:#f6f6f6;border-radius:10px;padding:10px;font-size:12px;margin:10px 0}.close{float:right;border:0;border-radius:8px;padding:7px 10px}.success{text-align:center;padding:28px 10px}.brands{display:flex;gap:7px;flex-wrap:wrap;justify-content:center}.brand{border:1px solid #ddd;background:#fff;padding:8px 11px;border-radius:9px;font-weight:800}.footer{text-align:center;color:#777;font-size:11px;padding:20px 0 30px}
+@media(min-width:600px){.grid{grid-template-columns:repeat(3,1fr)}}
 </style>
 </head>
-
 <body>
-
-<div class="topbar">
-  VICTORIA'S LOCAL POUCH SHOP
+<div class="top">LOCAL POUCH SERVICE</div>
+<div class="wrap">
+  <div class="card head"><div class="logo">POUCHES VIC</div><select id="territorySelect" class="territory"></select></div>
+  <div class="card hero"><div class="small"><b>LOCAL • SIMPLE • FAST</b></div><h1>YOUR POUCHES.<br>RIGHT HERE.</h1><p class="muted">Browse products currently listed in your territory.</p><button class="btn" onclick="shop.scrollIntoView({behavior:'smooth'})">SHOP POUCHES</button></div>
+  <h2 id="shop" class="section">SHOP POUCHES</h2>
+  <div id="brands" class="brands"></div>
+  <div id="products" class="grid" style="margin-top:14px"><div class="card">Loading…</div></div>
+  <div id="cartbar" class="cartbar"><div><b id="cartcount">0 cans</b><div class="small" id="carttier"></div></div><button onclick="openCart()">VIEW ORDER</button></div>
+  <div class="footer">© 2026 Pouches Vic</div>
 </div>
-
-<div class="container">
-
-  <header class="header">
-    <div class="logo">POUCHES VIC</div>
-    <div class="header-icons">⌕ ☰</div>
-  </header>
-
-  <section class="hero">
-    <div class="hero-small">LOCAL • SIMPLE • FAST</div>
-
-    <h1>YOUR POUCHES.<br>RIGHT HERE IN VIC.</h1>
-
-    <p>
-      Browse our selection of nicotine pouches available locally
-      in Victoria, BC.
-    </p>
-
-    <a class="button" href="#shop">SHOP POUCHES</a>
-  </section>
-
-  <div class="promo">
-    ⚡ LOCAL VICTORIA SERVICE
-  </div>
-
-  <h2 class="section-title" id="shop">BEST SELLERS</h2>
-
-  <div class="products">
-
-    <div class="product">
-      <div class="product-image">PRODUCT PHOTO</div>
-      <h3>PRODUCT ONE</h3>
-      <div class="product-info">
-        <span class="rating">★ 4.9</span>
-        <span>$15.00</span>
-      </div>
-      <a class="product-button" href="#">VIEW OPTIONS</a>
-    </div>
-
-    <div class="product">
-      <div class="product-image">PRODUCT PHOTO</div>
-      <h3>PRODUCT TWO</h3>
-      <div class="product-info">
-        <span class="rating">★ 4.9</span>
-        <span>$15.00</span>
-      </div>
-      <a class="product-button" href="#">VIEW OPTIONS</a>
-    </div>
-
-    <div class="product">
-      <div class="product-image">PRODUCT PHOTO</div>
-      <h3>PRODUCT THREE</h3>
-      <div class="product-info">
-        <span class="rating">★ 5.0</span>
-        <span>$15.00</span>
-      </div>
-      <a class="product-button" href="#">VIEW OPTIONS</a>
-    </div>
-
-    <div class="product">
-      <div class="product-image">PRODUCT PHOTO</div>
-      <h3>PRODUCT FOUR</h3>
-      <div class="product-info">
-        <span class="rating">★ 4.8</span>
-        <span>$15.00</span>
-      </div>
-      <a class="product-button" href="#">VIEW OPTIONS</a>
-    </div>
-
-  </div>
-
-  <section class="brands">
-    <h2>SHOP BY BRAND</h2>
-
-    <div class="brand-list">
-      <div class="brand">BRAND 1</div>
-      <div class="brand">BRAND 2</div>
-      <div class="brand">BRAND 3</div>
-    </div>
-  </section>
-
-  <section class="reviews">
-    <h2>What Victoria Says</h2>
-    <div class="stars">★★★★★</div>
-    <p>Fast, easy and local.</p>
-  </section>
-
-  <footer>
-    © 2026 Pouches Vic • Victoria, BC
-  </footer>
-
-</div>
-
+<div id="sheet" class="sheet" onclick="if(event.target===this)closeCart()"><div class="sheetbox">
+  <button class="close" onclick="closeCart()">✕</button>
+  <div id="checkout"></div>
+</div></div>
+<script>
+let territories=[],data=null,cart={},currentSlug='victoria';
+const $=id=>document.getElementById(id), money=n=>new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format(n);
+const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+async function init(){
+  territories=await fetch('/api/public/territories').then(r=>r.json());
+  currentSlug=(new URLSearchParams(location.search).get('territory')||'victoria');
+  if(!territories.some(t=>t.slug===currentSlug))currentSlug=territories[0]?.slug||'victoria';
+  territorySelect.innerHTML=territories.map(t=>`<option value="${t.slug}" ${t.slug===currentSlug?'selected':''}>${esc(t.name)}</option>`).join('');
+  territorySelect.onchange=()=>{currentSlug=territorySelect.value;cart={};load()};
+  await load();
+}
+async function load(){
+  data=await fetch('/api/public/territory/'+encodeURIComponent(currentSlug),{cache:'no-store'}).then(r=>r.json());
+  renderBrands();renderProducts();updateCart();
+}
+function tier(q){return data.tiers.find(x=>q>=x.min_qty&&(x.max_qty==null||q<=x.max_qty))||data.tiers.at(-1)}
+function unitPrice(q,p){return p.local_price_override!=null?Number(p.local_price_override):Number(tier(q)?.unit_price||0)}
+function renderBrands(){
+  const bs=[...new Set(data.products.map(p=>p.brand).filter(Boolean))];
+  brands.innerHTML=`<button class="brand" onclick="renderProducts('')">ALL</button>`+bs.map(b=>`<button class="brand" onclick="renderProducts('${esc(b).replace(/'/g,"&#39;")}')">${esc(b)}</button>`).join('');
+}
+function renderProducts(filter=''){
+  const list=data.products.filter(p=>!filter||p.brand===filter);
+  products.innerHTML=list.length?list.map(p=>`<div class="prod">
+    <div class="photo">${p.image?`<img src="${esc(p.image)}" alt="">`:'PRODUCT PHOTO'}</div>
+    <h3>${esc(p.flavor)}</h3><div class="small">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''}</div>
+    <div class="row" style="margin-top:7px"><b>${money(p.local_price_override??data.tiers[0]?.unit_price??0)}</b><span class="stock">${p.inventory} in stock</span></div>
+    <button class="btn" ${p.inventory<=0?'disabled':''} onclick="add('${p.id}')">${p.inventory<=0?'SOLD OUT':'ADD TO ORDER'}</button>
+  </div>`).join(''):`<div class="card" style="grid-column:1/-1;text-align:center">No products listed right now.</div>`;
+}
+function add(pid){
+  const p=data.products.find(x=>x.id===pid);if(!p)return;
+  const q=(cart[pid]||0)+1;if(q>p.inventory)return alert('No more stock available.');
+  cart[pid]=q;updateCart();
+}
+function cartQty(){return Object.values(cart).reduce((a,b)=>a+b,0)}
+function updateCart(){
+  const q=cartQty();cartbar.classList.toggle('show',q>0);cartcount.textContent=q+' can'+(q===1?'':'s');
+  carttier.textContent=q?money(tier(q)?.unit_price||0)+' tier price':'';
+}
+function openCart(){
+  const q=cartQty(), t=tier(q);
+  checkout.innerHTML=`<h2>Your Order</h2>
+    ${Object.entries(cart).filter(([,q])=>q>0).map(([pid,q])=>{const p=data.products.find(x=>x.id===pid);return `<div class="item"><div><b>${esc(p.flavor)}</b><div class="small">${esc(p.brand)}</div></div><input type="number" min="0" max="${p.inventory}" value="${q}" onchange="cart['${pid}']=Math.max(0,Math.min(${p.inventory},+this.value||0));updateCart();openCart()"></div>`}).join('')}
+    <div class="notice">${data.tiers.map(x=>`${x.min_qty}${x.max_qty?'–'+x.max_qty:'+'}: ${money(x.unit_price)} each`).join(' • ')}</div>
+    <div class="field"><label>DELIVERY ZONE</label><select id="zone">${data.zones.map(z=>`<option value="${z.id}">${esc(z.name)} — ${money(z.fee)}${z.free_at_qty?' (free at '+z.free_at_qty+'+)':''}</option>`).join('')}</select></div>
+    <div class="field"><label>NAME</label><input id="name"></div><div class="field"><label>PHONE</label><input id="phone"></div>
+    <div class="field"><label>ADDRESS</label><input id="address"></div><div class="field"><label>DELIVERY NOTES</label><textarea id="notes"></textarea></div>
+    <div class="field"><label>PAYMENT</label><select id="payment"><option>Cash on delivery</option><option>E-transfer</option><option>Other</option></select></div>
+    <div class="field"><label>PAYMENT NOTE (OPTIONAL)</label><input id="paynote"></div>
+    <div class="notice"><b>Zone boundaries:</b><br>${data.zones.map(z=>`<b>${esc(z.name)}:</b> ${esc(z.rule_notes||z.description)}<br>`).join('')}</div>
+    <button class="btn" onclick="submitOrder()">SUBMIT ORDER</button>`;
+  sheet.classList.add('open');
+}
+function closeCart(){sheet.classList.remove('open')}
+async function submitOrder(){
+  const items=Object.entries(cart).filter(([,q])=>q>0).map(([product_id,qty])=>({product_id,qty}));
+  const b={territory_slug:currentSlug,items,zone_id:zone.value,customer_name:name.value,customer_phone:phone.value,address:address.value,delivery_notes:notes.value,payment_method:payment.value,payment_note:paynote.value};
+  if(!b.customer_name||!b.customer_phone||!b.address)return alert('Please add name, phone and address.');
+  const r=await fetch('/api/public/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+  const j=await r.json();if(!r.ok)return alert(j.error||'Could not submit order');
+  cart={};updateCart();await load();
+  checkout.innerHTML=`<div class="success"><h2>Order #${j.order_no}</h2><p>Your order was submitted.</p><p><b>Total: ${money(j.total)}</b></p><button class="btn" onclick="closeCart()">DONE</button></div>`;
+}
+init();
+</script>
 </body>
 </html>

@@ -1,0 +1,15 @@
+{
+  "name": "pouches-vic",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Multi-territory Pouches Vic storefront, operations admin, inventory, orders and settlements",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
