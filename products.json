@@ -1,0 +1,22 @@
+[
+  {
+    "id": 1,
+    "brand": "Brand 1",
+    "flavor": "Product One",
+    "strength": "",
+    "price": 15,
+    "inventory": 0,
+    "listed": true,
+    "image": ""
+  },
+  {
+    "id": 2,
+    "brand": "Brand 2",
+    "flavor": "Product Two",
+    "strength": "",
+    "price": 15,
+    "inventory": 0,
+    "listed": true,
+    "image": ""
+  }
+]
