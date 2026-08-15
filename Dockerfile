@@ -1,14 +1,18 @@
 FROM node:22-bookworm-slim
 WORKDIR /app
-RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
+
 COPY package.json ./
 RUN npm install --omit=dev
+
 COPY server.js ./
 COPY index.html ./
 COPY admin.html ./
+
 ENV PORT=3000
 ENV DATA_DIR=/data
+
 RUN mkdir -p /data
+
 EXPOSE 3000
+
 CMD ["node","server.js"]
