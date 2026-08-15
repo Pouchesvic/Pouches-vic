@@ -1,4 +1,323 @@
 <!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pouches Vic</title>
+
+<style>
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f3f3f1;
+  color: #111;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.topbar {
+  background: #111;
+  color: white;
+  text-align: center;
+  padding: 10px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.container {
+  max-width: 600px;
+  margin: auto;
+  padding: 18px;
+}
+
+.header {
+  background: white;
+  border-radius: 22px;
+  padding: 24px 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.logo {
+  font-size: 27px;
+  font-weight: 900;
+  letter-spacing: -1px;
+}
+
+.header-icons {
+  font-size: 23px;
+  letter-spacing: 8px;
+}
+
+.hero {
+  background: white;
+  border-radius: 22px;
+  padding: 40px 24px;
+  text-align: center;
+}
+
+.hero-small {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 2px;
+}
+
+.hero h1 {
+  font-size: 37px;
+  line-height: 1.02;
+  margin: 13px 0;
+  font-weight: 900;
+}
+
+.hero p {
+  color: #555;
+  font-size: 16px;
+  line-height: 1.5;
+  margin: 0 auto 25px;
+  max-width: 390px;
+}
+
+.button {
+  display: block;
+  background: #111;
+  color: white;
+  padding: 17px;
+  border-radius: 11px;
+  text-decoration: none;
+  font-weight: 900;
+  letter-spacing: 1px;
+}
+
+.promo {
+  background: #111;
+  color: white;
+  border-radius: 16px;
+  margin-top: 16px;
+  padding: 17px;
+  text-align: center;
+  font-weight: 800;
+}
+
+.section-title {
+  text-align: center;
+  font-size: 29px;
+  font-weight: 900;
+  margin: 37px 0 20px;
+}
+
+.products {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.product {
+  text-align: center;
+}
+
+.product-image {
+  height: 165px;
+  border-radius: 20px;
+  background: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #999;
+  font-weight: bold;
+}
+
+.product h3 {
+  font-size: 15px;
+  margin: 13px 0 8px;
+}
+
+.product-info {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 800;
+  margin: 8px 4px 12px;
+}
+
+.rating {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  padding: 5px 7px;
+}
+
+.product-button {
+  display: block;
+  background: #111;
+  color: white;
+  text-decoration: none;
+  padding: 13px 5px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.brands {
+  background: white;
+  border-radius: 22px;
+  margin-top: 35px;
+  padding: 28px 20px;
+  text-align: center;
+}
+
+.brands h2 {
+  margin-top: 0;
+}
+
+.brand-list {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.brand {
+  border: 1px solid #ddd;
+  padding: 12px 17px;
+  border-radius: 10px;
+  font-weight: 800;
+}
+
+.reviews {
+  margin-top: 25px;
+  background: #151515;
+  color: white;
+  padding: 27px;
+  border-radius: 22px;
+}
+
+.stars {
+  color: #ffc400;
+  font-size: 20px;
+}
+
+footer {
+  text-align: center;
+  color: #777;
+  font-size: 13px;
+  padding: 35px 10px;
+}
+
+@media (max-width: 380px) {
+  .hero h1 {
+    font-size: 31px;
+  }
+
+  .product-image {
+    height: 145px;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<div class="topbar">
+  VICTORIA'S LOCAL POUCH SHOP
+</div>
+
+<div class="container">
+
+  <header class="header">
+    <div class="logo">POUCHES VIC</div>
+    <div class="header-icons">⌕ ☰</div>
+  </header>
+
+  <section class="hero">
+    <div class="hero-small">LOCAL • SIMPLE • FAST</div>
+
+    <h1>YOUR POUCHES.<br>RIGHT HERE IN VIC.</h1>
+
+    <p>
+      Browse our selection of nicotine pouches available locally
+      in Victoria, BC.
+    </p>
+
+    <a class="button" href="#shop">SHOP POUCHES</a>
+  </section>
+
+  <div class="promo">
+    ⚡ LOCAL VICTORIA SERVICE
+  </div>
+
+  <h2 class="section-title" id="shop">BEST SELLERS</h2>
+
+  <div class="products">
+
+    <div class="product">
+      <div class="product-image">PRODUCT PHOTO</div>
+      <h3>PRODUCT ONE</h3>
+      <div class="product-info">
+        <span class="rating">★ 4.9</span>
+        <span>$15.00</span>
+      </div>
+      <a class="product-button" href="#">VIEW OPTIONS</a>
+    </div>
+
+    <div class="product">
+      <div class="product-image">PRODUCT PHOTO</div>
+      <h3>PRODUCT TWO</h3>
+      <div class="product-info">
+        <span class="rating">★ 4.9</span>
+        <span>$15.00</span>
+      </div>
+      <a class="product-button" href="#">VIEW OPTIONS</a>
+    </div>
+
+    <div class="product">
+      <div class="product-image">PRODUCT PHOTO</div>
+      <h3>PRODUCT THREE</h3>
+      <div class="product-info">
+        <span class="rating">★ 5.0</span>
+        <span>$15.00</span>
+      </div>
+      <a class="product-button" href="#">VIEW OPTIONS</a>
+    </div>
+
+    <div class="product">
+      <div class="product-image">PRODUCT PHOTO</div>
+      <h3>PRODUCT FOUR</h3>
+      <div class="product-info">
+        <span class="rating">★ 4.8</span>
+        <span>$15.00</span>
+      </div>
+      <a class="product-button" href="#">VIEW OPTIONS</a>
+    </div>
+
+  </div>
+
+  <section class="brands">
+    <h2>SHOP BY BRAND</h2>
+
+    <div class="brand-list">
+      <div class="brand">BRAND 1</div>
+      <div class="brand">BRAND 2</div>
+      <div class="brand">BRAND 3</div>
+    </div>
+  </section>
+
+  <section class="reviews">
+    <h2>What Victoria Says</h2>
+    <div class="stars">★★★★★</div>
+    <p>Fast, easy and local.</p>
+  </section>
+
+  <footer>
+    © 2026 Pouches Vic • Victoria, BC
+  </footer>
+
+</div>
+
+</body>
+</html><!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
