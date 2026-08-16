@@ -847,7 +847,7 @@ function territorySnapshot(tid) {
   return {territory,tiers,zones,products,windows,settings:{mapbox_public_token:setting('mapbox_public_token',''),payment_cash_enabled:setting('payment_cash_enabled','true')==='true',payment_etransfer_enabled:setting('payment_etransfer_enabled','true')==='true',customer_discount_label:setting('customer_discount_label','Customer Appreciation Discount'),age_acknowledgement_text:setting('age_acknowledgement_text','')}};
 }
 function adminBootstrap() {
-  return {territories:all('SELECT * FROM territories ORDER BY archived,name'),settings:Object.fromEntries(all('SELECT key,value FROM settings').map(x=>[x.key,x.value]))};
+  return {territories:all("SELECT * FROM territories WHERE active=1 AND archived=0 ORDER BY CASE WHEN slug='victoria' THEN 0 ELSE 1 END,name"),settings:Object.fromEntries(all('SELECT key,value FROM settings').map(x=>[x.key,x.value]))};
 }
 function territoryAdmin(tid) {
   const territory=one('SELECT * FROM territories WHERE id=?',tid); if(!territory) return null;
@@ -929,7 +929,7 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/health') return send(res,200,{ok:true,time:now(),db:DB_FILE,email_configured:!!(RESEND_API_KEY&&ORDER_EMAIL_FROM)});
 
     // Public
-    if(url.pathname==='/api/public/territories'&&req.method==='GET') return send(res,200,all('SELECT id,name,slug,domain FROM territories WHERE active=1 AND archived=0 ORDER BY name'));
+    if(url.pathname==='/api/public/territories'&&req.method==='GET') return send(res,200,all("SELECT id,name,slug,domain FROM territories WHERE active=1 AND archived=0 ORDER BY CASE WHEN slug='victoria' THEN 0 ELSE 1 END,name"));
     const pubTerr=url.pathname.match(/^\/api\/public\/territory\/([^/]+)$/);
     if(pubTerr&&req.method==='GET'){
       const terr=publicTerritory(decodeURIComponent(pubTerr[1])); if(!terr)return send(res,404,{error:'Territory not found'});
