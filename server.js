@@ -942,7 +942,7 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/api/public/orders'&&req.method==='POST'){
       const b=await bodyJson(req);
       if(!b.age_acknowledged) return send(res,400,{error:'Age acknowledgement is required'});
-      if(!text(b.customer_email)||!text(b.customer_phone)||!text(b.address)) return send(res,400,{error:'Email, cell number and delivery address are required'});
+      if(!text(b.customer_name)||!text(b.customer_phone)||!text(b.address)) return send(res,400,{error:'Name, cell number and delivery address are required'});
       const o=createOrderCore(b,{source:'web',created_by_role:'customer'});
       sendOrderConfirmation(o.id).catch(console.error);
       return send(res,201,{id:o.id,order_no:o.order_no,total_cents:o.total_cents,customer_discount_cents:o.customer_discount_cents,status_url:orderStatusUrl(o)});

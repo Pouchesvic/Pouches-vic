@@ -1,94 +1,213 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Pouches Vic</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#f2f2ef;color:#111;font-family:Arial,Helvetica,sans-serif}.wrap{max-width:680px;margin:auto;padding:16px}.top{background:#111;color:#fff;text-align:center;padding:9px;font-size:11px;font-weight:900}.card{background:#fff;border-radius:22px;padding:20px;margin-bottom:14px}.head{display:flex;align-items:center;justify-content:space-between}.logo{font-size:25px;font-weight:1000}.muted{color:#676767}.hero{text-align:center;padding:36px 22px}.hero h1{font-size:32px;line-height:1.02;margin:8px 0}.hero p{line-height:1.5}.btn{width:100%;border:0;border-radius:11px;background:#111;color:#fff;padding:14px;font-weight:900;cursor:pointer}.secondary{background:#ececec;color:#111}.territory{font-size:12px;font-weight:900;border:1px solid #ddd;border-radius:9px;padding:8px;background:#fff}.section{font-size:27px;text-align:center;margin:28px 0 16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.photo{height:160px;background:#fff;border-radius:17px;display:flex;align-items:center;justify-content:center;overflow:hidden;color:#aaa;font-weight:800}.photo img{width:100%;height:100%;object-fit:cover}.prod h3{font-size:14px;margin:9px 2px 3px;text-transform:uppercase}.small{font-size:11px;color:#666}.row{display:flex;justify-content:space-between;gap:10px;align-items:center}.stock{background:#fff;border:1px solid #ddd;border-radius:7px;padding:4px 6px;font-size:10px}.prod .btn{padding:11px 6px;font-size:11px;margin-top:8px}.cartbar{position:sticky;bottom:10px;display:none;background:#111;color:#fff;border-radius:14px;padding:12px 14px;margin-top:18px;box-shadow:0 8px 25px #0003;z-index:5}.cartbar.show{display:flex;justify-content:space-between;align-items:center}.cartbar button{border:0;background:#fff;border-radius:8px;font-weight:900;padding:9px 11px}.sheet{display:none;position:fixed;inset:0;background:#0008;z-index:30;align-items:flex-end}.sheet.open{display:flex}.sheetbox{background:#fff;width:100%;max-height:90vh;overflow:auto;border-radius:22px 22px 0 0;padding:20px}.item{display:grid;grid-template-columns:1fr 75px;gap:10px;border-bottom:1px solid #eee;padding:9px 0}.item input,.field input,.field select,.field textarea{width:100%;border:1px solid #d7d7d7;border-radius:10px;padding:11px;font-size:16px}.field{margin:10px 0}.field label{display:block;font-size:11px;font-weight:900;margin-bottom:5px}.total{font-size:21px;font-weight:900}.notice{background:#f6f6f6;border-radius:10px;padding:10px;font-size:12px;margin:10px 0}.close{float:right;border:0;border-radius:8px;padding:7px 10px}.success{text-align:center;padding:28px 10px}.brands{display:flex;gap:7px;flex-wrap:wrap;justify-content:center}.brand{border:1px solid #ddd;background:#fff;padding:8px 11px;border-radius:9px;font-weight:800}.footer{text-align:center;color:#777;font-size:11px;padding:20px 0 30px}
-@media(min-width:600px){.grid{grid-template-columns:repeat(3,1fr)}}
+*{box-sizing:border-box}
+:root{--bg:#f2f2ef;--ink:#111;--muted:#6d6d6d;--line:#dededb;--card:#fff}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Arial,Helvetica,sans-serif}
+button,input,select,textarea{font:inherit}
+button{touch-action:manipulation}
+.wrap{max-width:680px;margin:auto;padding:16px}
+.top{background:#111;color:#fff;text-align:center;padding:9px;font-size:11px;font-weight:900;letter-spacing:.2px}
+.card{background:var(--card);border-radius:22px;padding:20px;margin-bottom:14px}
+.head{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.logo{font-size:25px;font-weight:1000}
+.muted{color:var(--muted)}
+.hero{text-align:center;padding:36px 22px}
+.hero h1{font-size:32px;line-height:1.02;margin:8px 0}
+.hero p{line-height:1.5}
+.btn{width:100%;border:0;border-radius:12px;background:#111;color:#fff;padding:15px;font-weight:900;cursor:pointer}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.territory{font-size:13px;font-weight:900;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:#fff;min-width:138px}
+.section{font-size:27px;text-align:center;margin:28px 0 12px}
+.section-sub{text-align:center;color:var(--muted);font-size:13px;margin:-3px 0 16px}
+.brands{display:flex;gap:7px;flex-wrap:wrap;justify-content:center;margin-bottom:14px}
+.brand{border:1px solid var(--line);background:#fff;padding:9px 12px;border-radius:10px;font-weight:850}
+.brand.active{background:#111;color:#fff;border-color:#111}
+.inventory{display:flex;flex-direction:column;gap:10px}
+.product-row{background:#fff;border-radius:18px;padding:12px;display:grid;grid-template-columns:82px 1fr;gap:12px;align-items:center}
+.thumb{width:82px;height:82px;background:#f3f3f1;border-radius:14px;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:10px;font-weight:900;text-align:center}
+.thumb img{width:100%;height:100%;object-fit:cover}
+.pname{font-size:17px;font-weight:1000;text-transform:uppercase;line-height:1.05}
+.pmeta{font-size:12px;color:#666;margin-top:4px}
+.price-stock{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px}
+.price{font-size:17px;font-weight:1000}
+.stock{font-size:11px;border:1px solid var(--line);background:#fafafa;border-radius:999px;padding:5px 8px;white-space:nowrap}
+.qty-wrap{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:10px}
+.qty-label{font-size:10px;font-weight:900;color:#666;margin-right:auto}
+.stepper{display:grid;grid-template-columns:42px 58px 42px;align-items:center;border:1px solid #d6d6d3;border-radius:12px;overflow:hidden;background:#f8f8f6}
+.stepper button{height:42px;border:0;background:#111;color:#fff;font-size:24px;line-height:1;font-weight:700}
+.stepper button:disabled{background:#d7d7d4;color:#888}
+.stepper input{width:58px;height:42px;border:0;border-left:1px solid #ddd;border-right:1px solid #ddd;text-align:center;font-size:17px;font-weight:900;background:#fff;outline:none;-moz-appearance:textfield}
+.stepper input::-webkit-inner-spin-button,.stepper input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.empty{background:#fff;border-radius:18px;padding:28px;text-align:center}
+.cartbar{position:sticky;bottom:10px;display:none;background:#111;color:#fff;border-radius:15px;padding:12px 14px;margin-top:18px;box-shadow:0 8px 25px #0003;z-index:5}
+.cartbar.show{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.cartbar button{border:0;background:#fff;border-radius:10px;font-weight:900;padding:10px 12px;white-space:nowrap}
+.cart-small{font-size:11px;color:#ddd;margin-top:2px}
+.sheet{display:none;position:fixed;inset:0;background:#0008;z-index:30;align-items:flex-end}
+.sheet.open{display:flex}
+.sheetbox{background:#fff;width:100%;max-height:92vh;overflow:auto;border-radius:22px 22px 0 0;padding:20px;padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+.close{float:right;border:0;background:#eee;border-radius:10px;padding:8px 11px;font-size:18px}
+.checkout-title{margin:2px 0 14px}
+.checkout-items{border:1px solid #e4e4e1;border-radius:15px;padding:4px 12px;margin-bottom:12px}
+.checkout-item{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #eee}
+.checkout-item:last-child{border-bottom:0}
+.checkout-item .stepper{grid-template-columns:36px 46px 36px}
+.checkout-item .stepper button,.checkout-item .stepper input{height:36px}
+.checkout-item .stepper input{width:46px;font-size:15px}
+.small{font-size:11px;color:#666}
+.notice{background:#f6f6f4;border-radius:12px;padding:11px;font-size:12px;line-height:1.4;margin:10px 0}
+.field{margin:11px 0}
+.field label{display:block;font-size:11px;font-weight:900;margin-bottom:5px}
+.field input,.field select,.field textarea{width:100%;border:1px solid #d7d7d4;border-radius:12px;padding:12px;font-size:16px;background:#fff;color:#111}
+.field textarea{min-height:92px;resize:vertical}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.form-grid .field{margin:0}
+.checkrow{display:flex;gap:10px;align-items:flex-start;background:#f6f6f4;border-radius:12px;padding:12px;margin:12px 0}
+.checkrow input{width:21px;height:21px;margin:0;flex:0 0 auto}
+.checkrow label{font-size:13px;line-height:1.35}
+.summary{background:#111;color:#fff;border-radius:14px;padding:14px;margin:14px 0}
+.summary-line{display:flex;justify-content:space-between;gap:12px;margin:5px 0}
+.summary-line.total{font-size:18px;font-weight:900;border-top:1px solid #ffffff33;padding-top:9px;margin-top:9px}
+details.notice summary{font-weight:900;cursor:pointer}
+.success{text-align:center;padding:28px 10px}
+.success h2{font-size:28px;margin-bottom:8px}
+.footer{text-align:center;color:#777;font-size:11px;padding:20px 0 30px}
+@media(max-width:460px){.form-grid{grid-template-columns:1fr}.logo{font-size:22px}.territory{min-width:125px}.product-row{grid-template-columns:74px 1fr}.thumb{width:74px;height:74px}}
 </style>
 </head>
 <body>
 <div class="top">LOCAL POUCH SERVICE</div>
 <div class="wrap">
   <div class="card head"><div class="logo">POUCHES VIC</div><select id="territorySelect" class="territory"></select></div>
-  <div class="card hero"><div class="small"><b>LOCAL • SIMPLE • FAST</b></div><h1>YOUR POUCHES.<br>RIGHT HERE.</h1><p class="muted">Browse products currently listed in your territory.</p><button class="btn" onclick="shop.scrollIntoView({behavior:'smooth'})">SHOP POUCHES</button></div>
+  <div class="card hero"><div class="small"><b>LOCAL • SIMPLE • FAST</b></div><h1>YOUR POUCHES.<br>RIGHT HERE.</h1><p class="muted">Choose what you want from the live inventory in your territory.</p><button class="btn" id="shopBtn">SHOP POUCHES</button></div>
   <h2 id="shop" class="section">SHOP POUCHES</h2>
+  <div class="section-sub">Pick any amount up to the live stock shown for each product.</div>
   <div id="brands" class="brands"></div>
-  <div id="products" class="grid" style="margin-top:14px"><div class="card">Loading…</div></div>
-  <div id="cartbar" class="cartbar"><div><b id="cartcount">0 cans</b><div class="small" id="carttier"></div></div><button onclick="openCart()">VIEW ORDER</button></div>
+  <div id="products" class="inventory"><div class="empty">Loading…</div></div>
+  <div id="cartbar" class="cartbar"><div><b id="cartcount">0 cans</b><div class="cart-small" id="carttier"></div></div><button id="reviewBtn">REVIEW ORDER</button></div>
   <div class="footer">© 2026 Pouches Vic</div>
 </div>
-<div id="sheet" class="sheet" onclick="if(event.target===this)closeCart()"><div class="sheetbox">
-  <button class="close" onclick="closeCart()">✕</button>
+<div id="sheet" class="sheet"><div class="sheetbox">
+  <button class="close" id="closeBtn">✕</button>
   <div id="checkout"></div>
 </div></div>
 <script>
-let territories=[],data=null,cart={},currentSlug='victoria';
-const $=id=>document.getElementById(id), money=n=>new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format(n);
+let territories=[],data=null,cart={},currentSlug='victoria',activeBrand='';
+const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const centsMoney=c=>new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format((Number(c)||0)/100);
+const toCents=v=>Math.round((Number(v)||0)*100);
+function tierCents(t){return Number(t?.unit_price_cents ?? toCents(t?.unit_price));}
+function zoneFeeCents(z){return Number(z?.fee_cents ?? toCents(z?.fee));}
+function overrideCents(p){if(p?.local_price_override_cents!=null)return Number(p.local_price_override_cents);if(p?.local_price_override!=null)return toCents(p.local_price_override);return null;}
+function tier(q){return data?.tiers?.find(x=>q>=Number(x.min_qty)&&(x.max_qty==null||q<=Number(x.max_qty)))||data?.tiers?.at(-1)||null;}
+function unitPriceCents(q,p){const o=overrideCents(p);return o!=null?o:tierCents(tier(q));}
+function productById(pid){return data?.products?.find(x=>x.id===pid);}
+function cartQty(){return Object.values(cart).reduce((a,b)=>a+Number(b||0),0);}
+function cartSubtotalCents(){const q=cartQty();return Object.entries(cart).reduce((sum,[pid,n])=>{const p=productById(pid);return p?sum+unitPriceCents(q,p)*Number(n||0):sum;},0);}
+function clampQty(pid,value){const p=productById(pid);if(!p)return 0;return Math.max(0,Math.min(Number(p.inventory)||0,Math.trunc(Number(value)||0)));}
 async function init(){
-  territories=await fetch('/api/public/territories').then(r=>r.json());
+  territories=await fetch('/api/public/territories',{cache:'no-store'}).then(r=>r.json());
   currentSlug=(new URLSearchParams(location.search).get('territory')||'victoria');
   if(!territories.some(t=>t.slug===currentSlug))currentSlug=territories[0]?.slug||'victoria';
-  territorySelect.innerHTML=territories.map(t=>`<option value="${t.slug}" ${t.slug===currentSlug?'selected':''}>${esc(t.name)}</option>`).join('');
-  territorySelect.onchange=()=>{currentSlug=territorySelect.value;cart={};load()};
+  $('territorySelect').innerHTML=territories.map(t=>`<option value="${esc(t.slug)}" ${t.slug===currentSlug?'selected':''}>${esc(t.name)}</option>`).join('');
+  $('territorySelect').onchange=()=>{currentSlug=$('territorySelect').value;cart={};activeBrand='';load();};
+  $('shopBtn').onclick=()=>$('shop').scrollIntoView({behavior:'smooth'});
+  $('reviewBtn').onclick=openCart;
+  $('closeBtn').onclick=closeCart;
+  $('sheet').onclick=e=>{if(e.target===$('sheet'))closeCart();};
   await load();
 }
 async function load(){
   data=await fetch('/api/public/territory/'+encodeURIComponent(currentSlug),{cache:'no-store'}).then(r=>r.json());
+  for(const pid of Object.keys(cart)){const p=productById(pid);if(!p)delete cart[pid];else cart[pid]=clampQty(pid,cart[pid]);}
   renderBrands();renderProducts();updateCart();
 }
-function tier(q){return data.tiers.find(x=>q>=x.min_qty&&(x.max_qty==null||q<=x.max_qty))||data.tiers.at(-1)}
-function unitPrice(q,p){return p.local_price_override!=null?Number(p.local_price_override):Number(tier(q)?.unit_price||0)}
 function renderBrands(){
-  const bs=[...new Set(data.products.map(p=>p.brand).filter(Boolean))];
-  brands.innerHTML=`<button class="brand" onclick="renderProducts('')">ALL</button>`+bs.map(b=>`<button class="brand" onclick="renderProducts('${esc(b).replace(/'/g,"&#39;")}')">${esc(b)}</button>`).join('');
+  const bs=[...new Set((data.products||[]).map(p=>p.brand).filter(Boolean))];
+  if(activeBrand&&!bs.includes(activeBrand))activeBrand='';
+  $('brands').innerHTML=`<button class="brand ${activeBrand===''?'active':''}" data-brand="">ALL</button>`+bs.map(b=>`<button class="brand ${activeBrand===b?'active':''}" data-brand="${esc(b)}">${esc(b)}</button>`).join('');
+  $('brands').onclick=e=>{const btn=e.target.closest('[data-brand]');if(!btn)return;activeBrand=btn.dataset.brand||'';renderBrands();renderProducts();};
 }
-function renderProducts(filter=''){
-  const list=data.products.filter(p=>!filter||p.brand===filter);
-  products.innerHTML=list.length?list.map(p=>`<div class="prod">
-    <div class="photo">${p.image?`<img src="${esc(p.image)}" alt="">`:'PRODUCT PHOTO'}</div>
-    <h3>${esc(p.flavor)}</h3><div class="small">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''}</div>
-    <div class="row" style="margin-top:7px"><b>${money(p.local_price_override??data.tiers[0]?.unit_price??0)}</b><span class="stock">${p.inventory} in stock</span></div>
-    <button class="btn" ${p.inventory<=0?'disabled':''} onclick="add('${p.id}')">${p.inventory<=0?'SOLD OUT':'ADD TO ORDER'}</button>
-  </div>`).join(''):`<div class="card" style="grid-column:1/-1;text-align:center">No products listed right now.</div>`;
+function renderProducts(){
+  const list=(data.products||[]).filter(p=>!activeBrand||p.brand===activeBrand);
+  $('products').innerHTML=list.length?list.map(p=>{
+    const q=clampQty(p.id,cart[p.id]||0), max=Number(p.inventory)||0, base=unitPriceCents(Math.max(1,cartQty()||1),p);
+    return `<div class="product-row">
+      <div class="thumb">${p.image?`<img src="${esc(p.image)}" alt="">`:'PRODUCT PHOTO'}</div>
+      <div>
+        <div class="pname">${esc(p.flavor)}</div>
+        <div class="pmeta">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''}</div>
+        <div class="price-stock"><span class="price">${centsMoney(base)}</span><span class="stock">Max ${max} available</span></div>
+        <div class="qty-wrap"><span class="qty-label">QUANTITY</span>${stepperHtml(p.id,q,max)}</div>
+      </div>
+    </div>`;
+  }).join(''):`<div class="empty">No products listed right now.</div>`;
 }
-function add(pid){
-  const p=data.products.find(x=>x.id===pid);if(!p)return;
-  const q=(cart[pid]||0)+1;if(q>p.inventory)return alert('No more stock available.');
-  cart[pid]=q;updateCart();
-}
-function cartQty(){return Object.values(cart).reduce((a,b)=>a+b,0)}
+function stepperHtml(pid,q,max){return `<div class="stepper"><button type="button" aria-label="Decrease quantity" ${q<=0?'disabled':''} onclick="changeQty('${pid}',-1)">−</button><input inputmode="numeric" type="number" min="0" max="${max}" value="${q}" aria-label="Quantity, maximum ${max}" onchange="setQty('${pid}',this.value)"><button type="button" aria-label="Increase quantity" ${q>=max?'disabled':''} onclick="changeQty('${pid}',1)">+</button></div>`;}
+function setQty(pid,value){const q=clampQty(pid,value);if(q>0)cart[pid]=q;else delete cart[pid];renderProducts();updateCart();renderCheckoutItems();}
+function changeQty(pid,delta){setQty(pid,(cart[pid]||0)+delta);}
 function updateCart(){
-  const q=cartQty();cartbar.classList.toggle('show',q>0);cartcount.textContent=q+' can'+(q===1?'':'s');
-  carttier.textContent=q?money(tier(q)?.unit_price||0)+' tier price':'';
+  const q=cartQty();$('cartbar').classList.toggle('show',q>0);$('cartcount').textContent=q+' can'+(q===1?'':'s');
+  $('carttier').textContent=q?`${centsMoney(tierCents(tier(q)))} bulk tier • ${centsMoney(cartSubtotalCents())} items`:'';
+}
+function paymentOptions(){
+  const out=[];if(data.settings?.payment_cash_enabled)out.push('<option value="cash">Cash</option>');if(data.settings?.payment_etransfer_enabled)out.push('<option value="etransfer">e-Transfer</option>');return out.join('');
 }
 function openCart(){
-  const q=cartQty(), t=tier(q);
-  checkout.innerHTML=`<h2>Your Order</h2>
-    ${Object.entries(cart).filter(([,q])=>q>0).map(([pid,q])=>{const p=data.products.find(x=>x.id===pid);return `<div class="item"><div><b>${esc(p.flavor)}</b><div class="small">${esc(p.brand)}</div></div><input type="number" min="0" max="${p.inventory}" value="${q}" onchange="cart['${pid}']=Math.max(0,Math.min(${p.inventory},+this.value||0));updateCart();openCart()"></div>`}).join('')}
-    <div class="notice">${data.tiers.map(x=>`${x.min_qty}${x.max_qty?'–'+x.max_qty:'+'}: ${money(x.unit_price)} each`).join(' • ')}</div>
-    <div class="field"><label>DELIVERY ZONE</label><select id="zone">${data.zones.map(z=>`<option value="${z.id}">${esc(z.name)} — ${money(z.fee)}${z.free_at_qty?' (free at '+z.free_at_qty+'+)':''}</option>`).join('')}</select></div>
-    <div class="field"><label>NAME</label><input id="name"></div><div class="field"><label>PHONE</label><input id="phone"></div>
-    <div class="field"><label>ADDRESS</label><input id="address"></div><div class="field"><label>DELIVERY NOTES</label><textarea id="notes"></textarea></div>
-    <div class="field"><label>PAYMENT</label><select id="payment"><option>Cash on delivery</option><option>E-transfer</option><option>Other</option></select></div>
-    <div class="field"><label>PAYMENT NOTE (OPTIONAL)</label><input id="paynote"></div>
-    <div class="notice"><b>Zone boundaries:</b><br>${data.zones.map(z=>`<b>${esc(z.name)}:</b> ${esc(z.rule_notes||z.description)}<br>`).join('')}</div>
-    <button class="btn" onclick="submitOrder()">SUBMIT ORDER</button>`;
-  sheet.classList.add('open');
+  if(!cartQty())return;
+  $('checkout').innerHTML=`<h2 class="checkout-title">Review Order</h2>
+    <div id="checkoutItems" class="checkout-items"></div>
+    <div class="notice">${(data.tiers||[]).map(x=>`${x.min_qty}${x.max_qty?'–'+x.max_qty:'+'}: ${centsMoney(tierCents(x))} each`).join(' • ')}</div>
+    <div class="field"><label>DELIVERY ZONE</label><select id="zone">${(data.zones||[]).map(z=>`<option value="${z.id}">${esc(z.name)} — ${centsMoney(zoneFeeCents(z))}${z.free_at_qty?' (free at '+z.free_at_qty+'+)':''}</option>`).join('')}</select></div>
+    <div class="form-grid"><div class="field"><label>NAME</label><input id="customerName" autocomplete="name"></div><div class="field"><label>PHONE</label><input id="customerPhone" inputmode="tel" autocomplete="tel"></div></div>
+    <div class="field"><label>EMAIL <span class="small">(optional — for order confirmation)</span></label><input id="customerEmail" type="email" inputmode="email" autocomplete="email"></div>
+    <div class="field"><label>ADDRESS</label><input id="customerAddress" autocomplete="street-address"></div>
+    <div class="field"><label>DELIVERY NOTES <span class="small">(optional)</span></label><textarea id="deliveryNotes"></textarea></div>
+    <div class="field"><label>PAYMENT</label><select id="paymentMethod">${paymentOptions()}</select></div>
+    <div class="field"><label>PAYMENT NOTE <span class="small">(optional)</span></label><input id="paymentNote"></div>
+    <details class="notice"><summary>Delivery zone boundaries</summary><div style="margin-top:8px">${(data.zones||[]).map(z=>`<b>${esc(z.name)}:</b> ${esc(z.rule_notes||z.description||'')}<br>`).join('')}</div></details>
+    <label class="checkrow"><input id="ageAck" type="checkbox"><span>${esc(data.settings?.age_acknowledgement_text||'I confirm that I meet the legal age requirement for this purchase.')}</span></label>
+    <div id="orderSummary" class="summary"></div>
+    <button id="submitBtn" class="btn" onclick="submitOrder()">SUBMIT ORDER</button>`;
+  $('zone').onchange=renderOrderSummary;
+  renderCheckoutItems();renderOrderSummary();$('sheet').classList.add('open');
 }
-function closeCart(){sheet.classList.remove('open')}
+function renderCheckoutItems(){
+  const box=$('checkoutItems');if(!box)return;
+  const entries=Object.entries(cart).filter(([,q])=>q>0);
+  if(!entries.length){closeCart();return;}
+  box.innerHTML=entries.map(([pid,q])=>{const p=productById(pid);if(!p)return '';return `<div class="checkout-item"><div><b>${esc(p.flavor)}</b><div class="small">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''} • Max ${p.inventory}</div></div>${stepperHtml(pid,q,p.inventory)}</div>`;}).join('');
+  renderOrderSummary();
+}
+function renderOrderSummary(){
+  const box=$('orderSummary');if(!box)return;
+  const q=cartQty(),items=cartSubtotalCents();let delivery=0;const z=$('zone')?data.zones.find(x=>x.id===$('zone').value):null;if(z){delivery=zoneFeeCents(z);if(z.free_at_qty!=null&&q>=Number(z.free_at_qty))delivery=0;}
+  box.innerHTML=`<div class="summary-line"><span>${q} can${q===1?'':'s'}</span><b>${centsMoney(items)}</b></div><div class="summary-line"><span>Delivery</span><b>${centsMoney(delivery)}</b></div><div class="summary-line total"><span>Before any checkout adjustment</span><span>${centsMoney(items+delivery)}</span></div>`;
+}
+function closeCart(){$('sheet').classList.remove('open');}
 async function submitOrder(){
   const items=Object.entries(cart).filter(([,q])=>q>0).map(([product_id,qty])=>({product_id,qty}));
-  const b={territory_slug:currentSlug,items,zone_id:zone.value,customer_name:name.value,customer_phone:phone.value,address:address.value,delivery_notes:notes.value,payment_method:payment.value,payment_note:paynote.value};
-  if(!b.customer_name||!b.customer_phone||!b.address)return alert('Please add name, phone and address.');
-  const r=await fetch('/api/public/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
-  const j=await r.json();if(!r.ok)return alert(j.error||'Could not submit order');
-  cart={};updateCart();await load();
-  checkout.innerHTML=`<div class="success"><h2>Order #${j.order_no}</h2><p>Your order was submitted.</p><p><b>Total: ${money(j.total)}</b></p><button class="btn" onclick="closeCart()">DONE</button></div>`;
+  if(!items.length)return alert('Please choose at least one product.');
+  const customer_name=$('customerName').value.trim(),customer_phone=$('customerPhone').value.trim(),address=$('customerAddress').value.trim();
+  if(!customer_name||!customer_phone||!address)return alert('Please add name, phone and address.');
+  if(!$('ageAck').checked)return alert('Please confirm the age requirement.');
+  if(!$('paymentMethod')?.value)return alert('No payment method is currently available.');
+  const b={territory_slug:currentSlug,items,zone_id:$('zone').value,customer_name,customer_phone,customer_email:$('customerEmail').value.trim(),address,delivery_notes:$('deliveryNotes').value.trim(),payment_method:$('paymentMethod').value,payment_note:$('paymentNote').value.trim(),age_acknowledged:true};
+  const btn=$('submitBtn');btn.disabled=true;btn.textContent='SUBMITTING…';
+  try{
+    const r=await fetch('/api/public/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});const j=await r.json();
+    if(!r.ok){btn.disabled=false;btn.textContent='SUBMIT ORDER';if(String(j.error||'').toLowerCase().includes('available'))await load();return alert(j.error||'Could not submit order');}
+    cart={};updateCart();await load();
+    $('checkout').innerHTML=`<div class="success"><h2>Order #${j.order_no}</h2><p>Your order was submitted.</p><p><b>Total: ${centsMoney(j.total_cents)}</b></p>${j.status_url?`<p><a class="btn" style="display:block;text-decoration:none" href="${esc(j.status_url)}">VIEW ORDER</a></p>`:''}<button class="btn" style="margin-top:10px" onclick="closeCart()">DONE</button></div>`;
+  }catch(e){btn.disabled=false;btn.textContent='SUBMIT ORDER';alert('Could not submit order. Please try again.');}
 }
-init();
+init().catch(()=>{$('products').innerHTML='<div class="empty">Could not load inventory. Please refresh.</div>';});
 </script>
 </body>
 </html>
