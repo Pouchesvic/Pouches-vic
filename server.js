@@ -413,6 +413,9 @@ function ensureColumn(table, name, def) {
   ['pricing_tiers','unit_price_cents','INTEGER'],
   ['delivery_zones','fee_cents','INTEGER'],
   ['delivery_zones','geojson',"TEXT DEFAULT ''"],
+  ['territories','operating_hours','TEXT DEFAULT \'\''],
+  ['territories','same_day_text','TEXT DEFAULT \'SAME-DAY DELIVERY\''],
+  ['territories','payment_note_text','TEXT DEFAULT \'No upfront payment — pay when your order arrives.\''],
   ['products','archived','INTEGER NOT NULL DEFAULT 0'],
   ['territory_products','local_price_override_cents','INTEGER'],
   ['drivers','archived','INTEGER NOT NULL DEFAULT 0'],
@@ -847,7 +850,7 @@ function territorySnapshot(tid) {
   return {territory,tiers,zones,products,windows,settings:{mapbox_public_token:setting('mapbox_public_token',''),payment_cash_enabled:setting('payment_cash_enabled','true')==='true',payment_etransfer_enabled:setting('payment_etransfer_enabled','true')==='true',customer_discount_label:setting('customer_discount_label','Customer Appreciation Discount'),age_acknowledgement_text:setting('age_acknowledgement_text','')}};
 }
 function adminBootstrap() {
-  return {territories:all("SELECT * FROM territories WHERE active=1 AND archived=0 ORDER BY CASE WHEN slug='victoria' THEN 0 ELSE 1 END,name"),settings:Object.fromEntries(all('SELECT key,value FROM settings').map(x=>[x.key,x.value]))};
+  return {territories:all('SELECT * FROM territories ORDER BY archived,name'),settings:Object.fromEntries(all('SELECT key,value FROM settings').map(x=>[x.key,x.value]))};
 }
 function territoryAdmin(tid) {
   const territory=one('SELECT * FROM territories WHERE id=?',tid); if(!territory) return null;
@@ -929,7 +932,7 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/health') return send(res,200,{ok:true,time:now(),db:DB_FILE,email_configured:!!(RESEND_API_KEY&&ORDER_EMAIL_FROM)});
 
     // Public
-    if(url.pathname==='/api/public/territories'&&req.method==='GET') return send(res,200,all("SELECT id,name,slug,domain FROM territories WHERE active=1 AND archived=0 ORDER BY CASE WHEN slug='victoria' THEN 0 ELSE 1 END,name"));
+    if(url.pathname==='/api/public/territories'&&req.method==='GET') return send(res,200,all('SELECT id,name,slug,domain FROM territories WHERE active=1 AND archived=0 ORDER BY name'));
     const pubTerr=url.pathname.match(/^\/api\/public\/territory\/([^/]+)$/);
     if(pubTerr&&req.method==='GET'){
       const terr=publicTerritory(decodeURIComponent(pubTerr[1])); if(!terr)return send(res,404,{error:'Territory not found'});
@@ -942,7 +945,7 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/api/public/orders'&&req.method==='POST'){
       const b=await bodyJson(req);
       if(!b.age_acknowledged) return send(res,400,{error:'Age acknowledgement is required'});
-      if(!text(b.customer_name)||!text(b.customer_phone)||!text(b.address)) return send(res,400,{error:'Name, cell number and delivery address are required'});
+      if(!text(b.customer_email)||!text(b.customer_phone)||!text(b.address)) return send(res,400,{error:'Email, cell number and delivery address are required'});
       const o=createOrderCore(b,{source:'web',created_by_role:'customer'});
       sendOrderConfirmation(o.id).catch(console.error);
       return send(res,201,{id:o.id,order_no:o.order_no,total_cents:o.total_cents,customer_discount_cents:o.customer_discount_cents,status_url:orderStatusUrl(o)});
@@ -993,6 +996,14 @@ const server=http.createServer(async(req,res)=>{
     if(archMatch&&req.method==='DELETE'){ archiveEntity(archMatch[2],decodeURIComponent(archMatch[1]),decodeURIComponent(archMatch[3])); return send(res,200,{ok:true}); }
     const terrDelete=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)$/);
     if(terrDelete&&req.method==='DELETE'){ archiveEntity('territory',decodeURIComponent(terrDelete[1]),null); return send(res,200,{ok:true}); }
+
+    const storefrontInfo=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/storefront-info$/);
+    if(storefrontInfo&&req.method==='PUT'){
+      const b=await bodyJson(req),tid=decodeURIComponent(storefrontInfo[1]);
+      run('UPDATE territories SET operating_hours=?,same_day_text=?,payment_note_text=?,updated_at=? WHERE id=?',
+        text(b.operating_hours),text(b.same_day_text)||'SAME-DAY DELIVERY',text(b.payment_note_text)||'No upfront payment — pay when your order arrives.',now(),tid);
+      return send(res,200,{ok:true});
+    }
 
     // Products and inventory
     if(url.pathname==='/api/admin/products'&&req.method==='POST'){

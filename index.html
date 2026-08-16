@@ -19,11 +19,16 @@ button{touch-action:manipulation}
 .hero{text-align:center;padding:36px 22px}
 .hero h1{font-size:32px;line-height:1.02;margin:8px 0}
 .hero p{line-height:1.5}
+.serviceInfo{background:#111;color:#fff;border-radius:18px;padding:17px 18px;margin:12px 0 16px;text-align:center}
+.serviceInfo .hoursLabel{font-size:10px;font-weight:900;letter-spacing:.12em;opacity:.65}
+.serviceInfo .hoursValue{font-size:20px;font-weight:1000;margin:4px 0 13px}
+.serviceInfo .sameDay{font-size:18px;font-weight:1000;letter-spacing:.04em}
+.serviceInfo .payNote{font-size:12px;opacity:.72;margin-top:5px}
 .btn{width:100%;border:0;border-radius:12px;background:#111;color:#fff;padding:15px;font-weight:900;cursor:pointer}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .territory{font-size:13px;font-weight:900;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:#fff;min-width:138px}
 .section{font-size:27px;text-align:center;margin:28px 0 12px}
-.section-sub{text-align:center;color:var(--muted);font-size:13px;margin:-3px 0 16px}
+.shop-anchor{height:1px;scroll-margin-top:12px}
 .brands{display:flex;gap:7px;flex-wrap:wrap;justify-content:center;margin-bottom:14px}
 .brand{border:1px solid var(--line);background:#fff;padding:9px 12px;border-radius:10px;font-weight:850}
 .brand.active{background:#111;color:#fff;border-color:#111}
@@ -35,7 +40,7 @@ button{touch-action:manipulation}
 .pmeta{font-size:12px;color:#666;margin-top:4px}
 .price-stock{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px}
 .price{font-size:17px;font-weight:1000}
-.stock{font-size:11px;border:1px solid var(--line);background:#fafafa;border-radius:999px;padding:5px 8px;white-space:nowrap}
+
 .qty-wrap{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:10px}
 .qty-label{font-size:10px;font-weight:900;color:#666;margin-right:auto}
 .stepper{display:grid;grid-template-columns:42px 58px 42px;align-items:center;border:1px solid #d6d6d3;border-radius:12px;overflow:hidden;background:#f8f8f6}
@@ -84,9 +89,14 @@ details.notice summary{font-weight:900;cursor:pointer}
 <div class="top">LOCAL POUCH SERVICE</div>
 <div class="wrap">
   <div class="card head"><div class="logo">POUCHES VIC</div><select id="territorySelect" class="territory"></select></div>
-  <div class="card hero"><div class="small"><b>LOCAL • SIMPLE • FAST</b></div><h1>YOUR POUCHES.<br>RIGHT HERE.</h1><p class="muted">Choose what you want from the live inventory available near you.</p><button class="btn" id="shopBtn">SHOP POUCHES</button></div>
-  <h2 id="shop" class="section">SHOP POUCHES</h2>
-  <div class="section-sub">Pick any amount up to the live stock shown for each product.</div>
+  <div class="card hero"><div class="small"><b>LOCAL • SIMPLE • FAST</b></div><h1>YOUR POUCHES.<br>RIGHT HERE.</h1><button class="btn" id="shopBtn">SHOP POUCHES</button></div>
+  <div class="serviceInfo">
+    <div class="hoursLabel">HOURS</div>
+    <div id="hoursValue" class="hoursValue">Hours posted here</div>
+    <div id="sameDayText" class="sameDay">SAME-DAY DELIVERY</div>
+    <div id="paymentNoteText" class="payNote">No upfront payment — pay when your order arrives.</div>
+  </div>
+  <div id="shop" class="shop-anchor"></div>
   <div id="brands" class="brands"></div>
   <div id="products" class="inventory"><div class="empty">Loading…</div></div>
   <div id="cartbar" class="cartbar"><div><b id="cartcount">0 cans</b><div class="cart-small" id="carttier"></div></div><button id="reviewBtn">REVIEW ORDER</button></div>
@@ -131,6 +141,13 @@ async function load(){
 function renderBrands(){
   const bs=[...new Set((data.products||[]).map(p=>p.brand).filter(Boolean))];
   if(activeBrand&&!bs.includes(activeBrand))activeBrand='';
+  if(bs.length<=1){
+    activeBrand='';
+    $('brands').innerHTML='';
+    $('brands').style.display='none';
+    return;
+  }
+  $('brands').style.display='flex';
   $('brands').innerHTML=`<button class="brand ${activeBrand===''?'active':''}" data-brand="">ALL</button>`+bs.map(b=>`<button class="brand ${activeBrand===b?'active':''}" data-brand="${esc(b)}">${esc(b)}</button>`).join('');
   $('brands').onclick=e=>{const btn=e.target.closest('[data-brand]');if(!btn)return;activeBrand=btn.dataset.brand||'';renderBrands();renderProducts();};
 }
@@ -143,7 +160,7 @@ function renderProducts(){
       <div>
         <div class="pname">${esc(p.flavor)}</div>
         <div class="pmeta">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''}</div>
-        <div class="price-stock"><span class="price">${centsMoney(base)}</span><span class="stock">Max ${max} available</span></div>
+        <div class="price-stock"><span class="price">${centsMoney(base)}</span></div>
         <div class="qty-wrap"><span class="qty-label">QUANTITY</span>${stepperHtml(p.id,q,max)}</div>
       </div>
     </div>`;
@@ -182,7 +199,7 @@ function renderCheckoutItems(){
   const box=$('checkoutItems');if(!box)return;
   const entries=Object.entries(cart).filter(([,q])=>q>0);
   if(!entries.length){closeCart();return;}
-  box.innerHTML=entries.map(([pid,q])=>{const p=productById(pid);if(!p)return '';return `<div class="checkout-item"><div><b>${esc(p.flavor)}</b><div class="small">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''} • Max ${p.inventory}</div></div>${stepperHtml(pid,q,p.inventory)}</div>`;}).join('');
+  box.innerHTML=entries.map(([pid,q])=>{const p=productById(pid);if(!p)return '';return `<div class="checkout-item"><div><b>${esc(p.flavor)}</b><div class="small">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''}</div></div>${stepperHtml(pid,q,p.inventory)}</div>`;}).join('');
   renderOrderSummary();
 }
 function renderOrderSummary(){
