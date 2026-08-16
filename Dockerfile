@@ -8,11 +8,13 @@ RUN npm install --omit=dev
 COPY server.js ./
 COPY index.html ./
 COPY admin.html ./
+COPY driver.html ./
+COPY sw.js ./
 
 ENV PORT=3000
-ENV DATA_DIR=/data
+ENV DATA_DIR=/app/data
 
-RUN mkdir -p /data
+RUN mkdir -p /app/data
 
 EXPOSE 3000
 

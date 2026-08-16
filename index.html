@@ -122,6 +122,7 @@ function cartQty(){return Object.values(cart).reduce((a,b)=>a+Number(b||0),0);}
 function cartSubtotalCents(){const q=cartQty();return Object.entries(cart).reduce((sum,[pid,n])=>{const p=productById(pid);return p?sum+unitPriceCents(q,p)*Number(n||0):sum;},0);}
 function clampQty(pid,value){const p=productById(pid);if(!p)return 0;return Math.max(0,Math.min(Number(p.inventory)||0,Math.trunc(Number(value)||0)));}
 async function init(){
+  const om=location.pathname.match(/^\/order\/([^/]+)$/);if(om)return renderOrderPage(decodeURIComponent(om[1]));
   territories=await fetch('/api/public/territories',{cache:'no-store'}).then(r=>r.json());
   currentSlug=(new URLSearchParams(location.search).get('territory')||'victoria');
   if(!territories.some(t=>t.slug===currentSlug))currentSlug=territories[0]?.slug||'victoria';
@@ -135,6 +136,9 @@ async function init(){
 }
 async function load(){
   data=await fetch('/api/public/territory/'+encodeURIComponent(currentSlug),{cache:'no-store'}).then(r=>r.json());
+  $('hoursValue').textContent=data.territory?.operating_hours||'Hours not posted';
+  $('sameDayText').textContent=data.territory?.same_day_text||'SAME-DAY DELIVERY';
+  $('paymentNoteText').textContent=data.territory?.payment_note_text||'No upfront payment — pay when your order arrives.';
   for(const pid of Object.keys(cart)){const p=productById(pid);if(!p)delete cart[pid];else cart[pid]=clampQty(pid,cart[pid]);}
   renderBrands();renderProducts();updateCart();
 }
@@ -178,52 +182,36 @@ function paymentOptions(){
 }
 function openCart(){
   if(!cartQty())return;
-  $('checkout').innerHTML=`<h2 class="checkout-title">Review Order</h2>
-    <div id="checkoutItems" class="checkout-items"></div>
-    <div class="notice">${(data.tiers||[]).map(x=>`${x.min_qty}${x.max_qty?'–'+x.max_qty:'+'}: ${centsMoney(tierCents(x))} each`).join(' • ')}</div>
-    <div class="field"><label>DELIVERY ZONE</label><select id="zone">${(data.zones||[]).map(z=>`<option value="${z.id}">${esc(z.name)} — ${centsMoney(zoneFeeCents(z))}${z.free_at_qty?' (free at '+z.free_at_qty+'+)':''}</option>`).join('')}</select></div>
+  $('checkout').innerHTML=`<h2 class="checkout-title">Review Order</h2><div id="checkoutItems" class="checkout-items"></div><div class="notice">${(data.tiers||[]).map(x=>`${x.min_qty}${x.max_qty?'–'+x.max_qty:'+'}: ${centsMoney(tierCents(x))} each`).join(' • ')}</div>
+    <div class="field"><label>DELIVERY AREA</label><select id="zone"><option value="">Choose your delivery area</option>${(data.zones||[]).map(z=>`<option value="${z.id}">${esc(z.name)} — ${centsMoney(zoneFeeCents(z))}${z.free_at_qty?' (free at '+z.free_at_qty+'+)':''}${z.description?' • '+esc(z.description):''}</option>`).join('')}</select></div>
     <div class="form-grid"><div class="field"><label>NAME</label><input id="customerName" autocomplete="name"></div><div class="field"><label>PHONE</label><input id="customerPhone" inputmode="tel" autocomplete="tel"></div></div>
-    <div class="field"><label>EMAIL <span class="small">(optional — for order confirmation)</span></label><input id="customerEmail" type="email" inputmode="email" autocomplete="email"></div>
-    <div class="field"><label>ADDRESS</label><input id="customerAddress" autocomplete="street-address"></div>
+    <div class="field"><label>EMAIL <span class="small">(optional — for receipt)</span></label><input id="customerEmail" type="email" inputmode="email" autocomplete="email"></div>
+    <div class="field"><label>ADDRESS</label><input id="customerAddress" autocomplete="street-address" placeholder="Street address, city"></div>
+    <div id="areaHint" class="small"></div>
     <div class="field"><label>DELIVERY NOTES <span class="small">(optional)</span></label><textarea id="deliveryNotes"></textarea></div>
-    <div class="field"><label>PAYMENT</label><select id="paymentMethod">${paymentOptions()}</select></div>
-    <div class="field"><label>PAYMENT NOTE <span class="small">(optional)</span></label><input id="paymentNote"></div>
-    <details class="notice"><summary>Delivery zone boundaries</summary><div style="margin-top:8px">${(data.zones||[]).map(z=>`<b>${esc(z.name)}:</b> ${esc(z.rule_notes||z.description||'')}<br>`).join('')}</div></details>
+    <div class="field"><label>PAYMENT</label><select id="paymentMethod">${paymentOptions()}</select></div><div class="field"><label>PAYMENT NOTE <span class="small">(optional)</span></label><input id="paymentNote"></div>
+    <details class="notice"><summary>Delivery area guide</summary><div style="margin-top:8px">${(data.zones||[]).map(z=>`<b>${esc(z.name)}:</b> ${esc(z.rule_notes||z.description||'')}<br>`).join('')}</div></details>
     <label class="checkrow"><input id="ageAck" type="checkbox"><span>${esc(data.settings?.age_acknowledgement_text||'I confirm that I meet the legal age requirement for this purchase.')}</span></label>
-    <div id="orderSummary" class="summary"></div>
-    <button id="submitBtn" class="btn" onclick="submitOrder()">SUBMIT ORDER</button>`;
-  $('zone').onchange=renderOrderSummary;
-  renderCheckoutItems();renderOrderSummary();$('sheet').classList.add('open');
+    <div id="orderSummary" class="summary"></div><button id="submitBtn" class="btn" onclick="submitOrder()">PLACE ORDER</button>`;
+  $('zone').onchange=renderOrderSummary;$('customerAddress').addEventListener('input',suggestDeliveryArea);renderCheckoutItems();renderOrderSummary();$('sheet').classList.add('open');
 }
-function renderCheckoutItems(){
-  const box=$('checkoutItems');if(!box)return;
-  const entries=Object.entries(cart).filter(([,q])=>q>0);
-  if(!entries.length){closeCart();return;}
-  box.innerHTML=entries.map(([pid,q])=>{const p=productById(pid);if(!p)return '';return `<div class="checkout-item"><div><b>${esc(p.flavor)}</b><div class="small">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''}</div></div>${stepperHtml(pid,q,p.inventory)}</div>`;}).join('');
-  renderOrderSummary();
-}
-function renderOrderSummary(){
-  const box=$('orderSummary');if(!box)return;
-  const q=cartQty(),items=cartSubtotalCents();let delivery=0;const z=$('zone')?data.zones.find(x=>x.id===$('zone').value):null;if(z){delivery=zoneFeeCents(z);if(z.free_at_qty!=null&&q>=Number(z.free_at_qty))delivery=0;}
-  box.innerHTML=`<div class="summary-line"><span>${q} can${q===1?'':'s'}</span><b>${centsMoney(items)}</b></div><div class="summary-line"><span>Delivery</span><b>${centsMoney(delivery)}</b></div><div class="summary-line total"><span>Before any checkout adjustment</span><span>${centsMoney(items+delivery)}</span></div>`;
-}
+function suggestDeliveryArea(){const v=$('customerAddress').value.toLowerCase(),zones=data.zones||[];let wanted='';if(/langford|colwood|west ?shore/.test(v))wanted='orange';if(wanted){const z=zones.find(x=>String(x.name).toLowerCase()===wanted);if(z&&$('zone').value!==z.id){$('zone').value=z.id;$('areaHint').textContent=`Suggested delivery area: ${z.name}. Please confirm it is correct.`;renderOrderSummary();}}else $('areaHint').textContent='';}
+function renderCheckoutItems(){const box=$('checkoutItems');if(!box)return;const entries=Object.entries(cart).filter(([,q])=>q>0);if(!entries.length){closeCart();return;}box.innerHTML=entries.map(([pid,q])=>{const p=productById(pid);if(!p)return '';return `<div class="checkout-item"><div><b>${esc(p.flavor)}</b><div class="small">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''}</div></div>${stepperHtml(pid,q,p.inventory)}</div>`;}).join('');renderOrderSummary();}
+function currentQuote(){const q=cartQty(),subtotal=cartSubtotalCents();let delivery=0;const z=$('zone')?data.zones.find(x=>x.id===$('zone').value):null;if(z){delivery=zoneFeeCents(z);if(z.free_at_qty!=null&&q>=Number(z.free_at_qty))delivery=0;}const pre=subtotal+delivery,step=Math.max(1,Number(data.settings?.round_down_to_cents)||500),total=Math.floor(pre/step)*step,discount=Math.max(0,pre-total);return {q,subtotal,delivery,pre,total,discount,z};}
+function renderOrderSummary(){const box=$('orderSummary');if(!box)return;const x=currentQuote(),label=data.settings?.customer_discount_label||'Customer Appreciation';box.innerHTML=`<div class="summary-line"><span>Products (${x.q} can${x.q===1?'':'s'})</span><b>${centsMoney(x.subtotal)}</b></div><div class="summary-line"><span>Delivery</span><b>${x.z?centsMoney(x.delivery):'Choose area'}</b></div>${x.discount>0?`<div class="summary-line"><span>${esc(label)}</span><b>−${centsMoney(x.discount)}</b></div>`:''}<div class="summary-line total"><span>TOTAL</span><span>${x.z?centsMoney(x.total):'—'}</span></div>`;}
 function closeCart(){$('sheet').classList.remove('open');}
 async function submitOrder(){
-  const items=Object.entries(cart).filter(([,q])=>q>0).map(([product_id,qty])=>({product_id,qty}));
-  if(!items.length)return alert('Please choose at least one product.');
-  const customer_name=$('customerName').value.trim(),customer_phone=$('customerPhone').value.trim(),address=$('customerAddress').value.trim();
-  if(!customer_name||!customer_phone||!address)return alert('Please add name, phone and address.');
-  if(!$('ageAck').checked)return alert('Please confirm the age requirement.');
-  if(!$('paymentMethod')?.value)return alert('No payment method is currently available.');
-  const b={territory_slug:currentSlug,items,zone_id:$('zone').value,customer_name,customer_phone,customer_email:$('customerEmail').value.trim(),address,delivery_notes:$('deliveryNotes').value.trim(),payment_method:$('paymentMethod').value,payment_note:$('paymentNote').value.trim(),age_acknowledged:true};
-  const btn=$('submitBtn');btn.disabled=true;btn.textContent='SUBMITTING…';
-  try{
-    const r=await fetch('/api/public/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});const j=await r.json();
-    if(!r.ok){btn.disabled=false;btn.textContent='SUBMIT ORDER';if(String(j.error||'').toLowerCase().includes('available'))await load();return alert(j.error||'Could not submit order');}
-    cart={};updateCart();await load();
-    $('checkout').innerHTML=`<div class="success"><h2>Order #${j.order_no}</h2><p>Your order was submitted.</p><p><b>Total: ${centsMoney(j.total_cents)}</b></p>${j.status_url?`<p><a class="btn" style="display:block;text-decoration:none" href="${esc(j.status_url)}">VIEW ORDER</a></p>`:''}<button class="btn" style="margin-top:10px" onclick="closeCart()">DONE</button></div>`;
-  }catch(e){btn.disabled=false;btn.textContent='SUBMIT ORDER';alert('Could not submit order. Please try again.');}
+  const entries=Object.entries(cart).filter(([,q])=>q>0),items=entries.map(([product_id,qty])=>({product_id,qty}));if(!items.length)return alert('Please choose at least one product.');
+  const customer_name=$('customerName').value.trim(),customer_phone=$('customerPhone').value.trim(),customer_email=$('customerEmail').value.trim(),address=$('customerAddress').value.trim(),delivery_notes=$('deliveryNotes').value.trim(),payment_method=$('paymentMethod')?.value||'',payment_note=$('paymentNote').value.trim(),zone_id=$('zone').value;
+  if(!customer_name||!customer_phone||!address)return alert('Please add name, phone and address.');if(!zone_id)return alert('Please choose your delivery area.');if(!$('ageAck').checked)return alert('Please confirm the age requirement.');if(!payment_method)return alert('No payment method is currently available.');
+  const snapshot=entries.map(([pid,qty])=>{const p=productById(pid);return {qty,brand:p?.brand||'',flavor:p?.flavor||'',strength:p?.strength||''}}),zone=data.zones.find(z=>z.id===zone_id);
+  const b={territory_slug:currentSlug,items,zone_id,customer_name,customer_phone,customer_email,address,delivery_notes,payment_method,payment_note,age_acknowledged:true};const btn=$('submitBtn');btn.disabled=true;btn.textContent='PLACING ORDER…';
+  try{const r=await fetch('/api/public/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});const j=await r.json();if(!r.ok){btn.disabled=false;btn.textContent='PLACE ORDER';if(String(j.error||'').toLowerCase().includes('available'))await load();return alert(j.error||'Could not submit order');}
+    const label=data.settings?.customer_discount_label||'Customer Appreciation',itemHtml=snapshot.map(x=>`<div class="receipt-line"><span>${x.qty} × ${esc(x.brand)} ${esc(x.flavor)}${x.strength?' • '+esc(x.strength):''}</span></div>`).join('');cart={};updateCart();await load();
+    $('checkout').innerHTML=`<div class="success"><div class="confirm-check">✓</div><div class="confirm-title">ORDER CONFIRMED</div><div class="small">Order #${j.order_no}</div><div class="receipt">${itemHtml}<div class="hr"></div><div class="receipt-line"><span>Products</span><b>${centsMoney(j.subtotal_cents)}</b></div><div class="receipt-line"><span>Delivery${j.zone_name?' • '+esc(j.zone_name):''}</span><b>${centsMoney(j.delivery_fee_cents)}</b></div>${j.customer_discount_cents>0?`<div class="receipt-line"><span>${esc(label)}</span><b>−${centsMoney(j.customer_discount_cents)}</b></div>`:''}<div class="receipt-line total"><span>TOTAL</span><span>${centsMoney(j.total_cents)}</span></div></div><div style="text-align:left" class="order-meta"><b>Deliver to</b><br>${esc(address)}${delivery_notes?`<br><br><b>Delivery notes</b><br>${esc(delivery_notes)}`:''}<br><br><b>Payment</b><br>${payment_method==='cash'?'Cash':payment_method==='etransfer'?'e-Transfer':esc(payment_method)}${customer_email&&j.confirmation_email_status==='sent'?`<br><br>Receipt emailed to ${esc(customer_email)}.`:''}</div>${j.status_url?`<p><a class="btn" style="display:block;text-decoration:none" href="${esc(j.status_url)}">VIEW MY ORDER</a></p>`:''}<button class="btn ghost" style="margin-top:8px" onclick="closeCart()">DONE</button></div>`;
+  }catch(e){btn.disabled=false;btn.textContent='PLACE ORDER';alert('Could not submit order. Please try again.');}
 }
+async function renderOrderPage(token){try{const r=await fetch('/api/public/orders/token/'+encodeURIComponent(token),{cache:'no-store'}),o=await r.json();if(!r.ok)throw Error(o.error||'Order not found');const label='Customer Appreciation';document.body.innerHTML=`<div class="order-page"><div class="card"><div class="small">POUCHES VIC</div><h1 style="margin:6px 0">Order #${o.order_no}</h1><span class="status-chip">${esc(String(o.status||'').toUpperCase())}</span></div><div class="card"><div class="order-meta"><b>${esc(o.customer_name)}</b><br>${esc(o.address)}${o.delivery_notes?`<br><br><b>Delivery notes</b><br>${esc(o.delivery_notes)}`:''}</div><div class="receipt">${o.items.map(i=>`<div class="receipt-line"><span>${i.qty} × ${esc(i.brand_snapshot)} ${esc(i.product_name_snapshot)}${i.strength_snapshot?' • '+esc(i.strength_snapshot):''}</span><b>${centsMoney(i.line_total_cents)}</b></div>`).join('')}<div class="hr"></div><div class="receipt-line"><span>Products</span><b>${centsMoney(o.subtotal_cents)}</b></div><div class="receipt-line"><span>Delivery${o.zone_name_snapshot?' • '+esc(o.zone_name_snapshot):''}</span><b>${centsMoney(o.delivery_fee_cents)}</b></div>${o.customer_discount_cents>0?`<div class="receipt-line"><span>${label}</span><b>−${centsMoney(o.customer_discount_cents)}</b></div>`:''}<div class="receipt-line total"><span>TOTAL</span><span>${centsMoney(o.total_cents)}</span></div></div>${o.driver_name?`<p><b>Driver:</b> ${esc(o.driver_name)}</p>`:''}${o.text_driver_href?`<a class="btn" style="display:block;text-decoration:none;text-align:center" href="${esc(o.text_driver_href)}">TEXT YOUR DRIVER</a>`:''}</div><a class="btn ghost" style="display:block;text-decoration:none;text-align:center" href="/">BACK TO POUCHES VIC</a></div>`;}catch(e){document.body.innerHTML=`<div class="order-page"><div class="card"><h2>Order not found</h2><p>We couldn't load that order.</p><a class="btn" href="/">BACK TO POUCHES VIC</a></div></div>`;}}
 init().catch(()=>{$('products').innerHTML='<div class="empty">Could not load inventory. Please refresh.</div>';});
 </script>
 </body>
