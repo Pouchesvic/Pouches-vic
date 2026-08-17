@@ -1,4 +1,4 @@
-POUCHES VIC — FULL FOUNDATION BUILD v0.4
+POUCHES VIC — FULL FOUNDATION BUILD v0.6
 
 THIS BUILD IS A FOUNDATION, NOT JUST A MOCKUP.
 
@@ -134,11 +134,21 @@ This is now a Node application with SQLite.
 Dokploy environment variable:
   ADMIN_PASSWORD=choose-a-strong-password
 
+ADMIN_PASSWORD is required. The server refuses to start if it is missing or empty.
+
+Optional email environment variables:
+  RESEND_API_KEY
+  ORDER_EMAIL_FROM
+  ORDER_EMAIL_REPLY_TO
+
+Optional public URL environment variable:
+  PUBLIC_BASE_URL=https://pouchesvic.com
+
 Persistent storage MUST map a Dokploy volume to:
-  /data
+  /app/data
 
 The database will be:
-  /data/pouchesvic.db
+  /app/data/pouchesvic.db
 
 The Dockerfile exposes port:
   3000
@@ -148,15 +158,12 @@ IMPORTANT PRODUCTION NOTE
 This build gives us a proper data model and usable admin foundation, but there are a few things I would add before calling the whole business system finished:
 
 - Actual user accounts / separate login credentials for Super Admin, Operations Admin and individual Drivers.
-- Driver-only screens that limit them to their own territory/orders.
-- Email notifications and completion links.
 - True automatic address-zone detection using geocoding + geofences.
-- Weekly date-range settlement reports and finalized settlement/paid records.
 - Territory-domain automatic routing.
 - Canada-wide shipping toggle/flow.
-- PWA manifest/service worker.
+- PWA manifest and install experience.
 - SEO and final branding/photos.
 - Backups.
-- Stronger production security (CSRF protection, rate limiting, password hashing/user table).
+- Stronger production security (password-hardened driver PIN storage and a user table).
 
 The important architecture is now in place so these can be added without redesigning inventory/territories/orders.
