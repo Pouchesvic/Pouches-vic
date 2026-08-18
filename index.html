@@ -123,6 +123,7 @@ details.notice summary{font-weight:900;cursor:pointer}
 </div></div>
 <script>
 let territories=[],data=null,cart={},currentSlug='victoria',activeBrand='';
+Object.defineProperties(window,{data:{configurable:true,get:()=>data},currentSlug:{configurable:true,get:()=>currentSlug},activeBrand:{configurable:true,get:()=>activeBrand}});
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const centsMoney=c=>new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format((Number(c)||0)/100);

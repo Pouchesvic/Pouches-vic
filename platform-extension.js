@@ -75,7 +75,10 @@ function ensurePlatform() {
     ['products','attributes_json',"TEXT DEFAULT '{}'"],
     ['orders','support_updated_at','TEXT'],
     ['orders','fulfillment_type',"TEXT DEFAULT 'delivery'"],
-    ['orders','seller_id','TEXT']
+    ['orders','seller_id','TEXT'],
+    ['orders','tip_cents','INTEGER NOT NULL DEFAULT 0'],
+    ['orders','tip_recipient_type',"TEXT NOT NULL DEFAULT 'driver'"],
+    ['orders','tip_recipient_driver_id','TEXT']
   ].forEach(x => ensureColumn(...x));
 
   openDb().exec(`
@@ -272,6 +275,28 @@ function ensurePlatform() {
       show_social_links INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS platform_settlement_periods(
+      id TEXT PRIMARY KEY, territory_id TEXT NOT NULL, driver_id TEXT NOT NULL,
+      started_at TEXT NOT NULL, ended_at TEXT, status TEXT NOT NULL DEFAULT 'open',
+      starting_inventory INTEGER, actual_ending_inventory INTEGER,
+      snapshot_json TEXT NOT NULL DEFAULT '{}', closed_at TEXT, reopened_at TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      FOREIGN KEY(territory_id) REFERENCES territories(id) ON DELETE RESTRICT,
+      FOREIGN KEY(driver_id) REFERENCES drivers(id) ON DELETE RESTRICT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_settlement_open ON platform_settlement_periods(territory_id,driver_id) WHERE status='open';
+    CREATE TABLE IF NOT EXISTS platform_settlement_transactions(
+      id TEXT PRIMARY KEY, period_id TEXT NOT NULL, territory_id TEXT NOT NULL, driver_id TEXT NOT NULL,
+      kind TEXT NOT NULL, qty INTEGER NOT NULL DEFAULT 0, amount_cents INTEGER NOT NULL DEFAULT 0,
+      note TEXT NOT NULL DEFAULT '', created_by_role TEXT NOT NULL DEFAULT 'admin', created_at TEXT NOT NULL,
+      FOREIGN KEY(period_id) REFERENCES platform_settlement_periods(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_platform_settlement_tx ON platform_settlement_transactions(period_id,created_at);
+    CREATE TABLE IF NOT EXISTS platform_settlement_audit(
+      id TEXT PRIMARY KEY, period_id TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+      snapshot_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+      FOREIGN KEY(period_id) REFERENCES platform_settlement_periods(id) ON DELETE CASCADE
+    );
   `);
 
   const t = now();
@@ -410,7 +435,10 @@ function readBody(req, limit = 1024 * 1024) {
 function injectHtml(file, scriptPath) {
   const p = path.join(__dirname, file);
   let html = fs.readFileSync(p, 'utf8');
-  if (scriptPath && !html.includes(scriptPath)) html = html.replace('</body>', `<script src="${scriptPath}"></script></body>`);
+  if (scriptPath && !html.includes(scriptPath)) {
+    const scriptFile=path.join(__dirname,scriptPath.replace(/^\//,'')),version=fs.existsSync(scriptFile)?Math.trunc(fs.statSync(scriptFile).mtimeMs):Date.now();
+    html = html.replace('</body>', `<script src="${scriptPath}?v=${version}"></script></body>`);
+  }
   return html;
 }
 function serveFile(res, file, type) {
@@ -1004,6 +1032,7 @@ function listZoneOverrides(territoryId) {
   return all(`SELECT z.*,d.name zone_name,c.display_name customer_name,c.phone customer_phone FROM platform_zone_overrides z JOIN delivery_zones d ON d.id=z.zone_id LEFT JOIN platform_customers c ON c.id=z.customer_id WHERE z.territory_id=? ORDER BY z.active DESC,z.updated_at DESC`, territoryId);
 }
 function customerAdminList(territoryId = '', q = '') {
+  backfillExistingCustomers();
   const query = `%${text(q).toLowerCase()}%`;
   let rows = all(`SELECT c.*,(SELECT COUNT(*) FROM platform_customer_orders co WHERE co.customer_id=c.id) order_count,
     (SELECT MAX(o.created_at) FROM platform_customer_orders co JOIN orders o ON o.id=co.order_id WHERE co.customer_id=c.id) last_order
@@ -1045,7 +1074,9 @@ function saveProductRating(productId, b) {
   if (!one('SELECT 1 FROM products WHERE id=?', productId)) throw new Error('Product not found');
   const rating = Math.max(1, Math.min(5, Number(b.rating) || 5));
   const count = Math.max(0, int(b.review_count));
-  run(`INSERT INTO platform_product_ratings(product_id,enabled,rating,review_count,updated_at) VALUES(?,1,?,?,?) ON CONFLICT(product_id) DO UPDATE SET enabled=1,rating=excluded.rating,review_count=excluded.review_count,updated_at=excluded.updated_at`, productId,rating,count,now());
+  const enabled=b.enabled===undefined?1:bool(b.enabled);
+  run(`INSERT INTO platform_product_ratings(product_id,enabled,rating,review_count,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(product_id) DO UPDATE SET enabled=excluded.enabled,rating=excluded.rating,review_count=excluded.review_count,updated_at=excluded.updated_at`, productId,enabled,rating,count,now());
+  if(enabled) run("UPDATE platform_modules SET enabled=1,updated_at=? WHERE module_key='product_ratings'",now());
   return one('SELECT * FROM platform_product_ratings WHERE product_id=?', productId);
 }
 
@@ -1084,6 +1115,53 @@ async function sendBusinessNewOrderNotifications(orderId) {
 // Core invokes this hook only from successful order-creation routes. Delivery rows make
 // repeated calls idempotent; later status/payment updates never invoke this hook.
 globalThis.pvNotifyNewOrder = sendBusinessNewOrderNotifications;
+
+// ---------- Boss-first settlement periods ----------
+function openSettlementPeriod(territoryId, driverId) {
+  let p=one("SELECT * FROM platform_settlement_periods WHERE territory_id=? AND driver_id=? AND status='open' ORDER BY started_at DESC LIMIT 1",territoryId,driverId);
+  if(p)return p;
+  const last=one("SELECT closed_at FROM platform_settlement_periods WHERE territory_id=? AND driver_id=? AND status='closed' ORDER BY closed_at DESC LIMIT 1",territoryId,driverId),t=now(),pid=id();
+  run("INSERT INTO platform_settlement_periods(id,territory_id,driver_id,started_at,status,created_at,updated_at) VALUES(?,?,?,?,'open',?,?)",pid,territoryId,driverId,last?.closed_at||t,t,t);
+  return one('SELECT * FROM platform_settlement_periods WHERE id=?',pid);
+}
+function platformOrderQty(orderId){return int(one('SELECT COALESCE(SUM(qty),0) q FROM order_items WHERE order_id=?',orderId)?.q);}
+function platformSettlementEntries(orders){
+  const entries=[];
+  for(const o of orders){
+    const qty=platformOrderQty(o.id),rules=all('SELECT * FROM settlement_rules WHERE territory_id=? AND active=1 AND archived=0 ORDER BY sort_order',o.territory_id);
+    for(const r of rules){
+      let amount=0,targetType='',targetDriver=null,entryType='';const rate=int(r.amount_cents);
+      if(r.rule_type==='per_can_driver_to_boss'&&r.from_driver_id===o.assigned_driver_id){amount=qty*rate;targetType='boss';entryType='per_can_to_boss';}
+      else if(r.rule_type==='per_can_driver_to_driver'&&r.from_driver_id===o.assigned_driver_id){amount=qty*rate;targetType='driver';targetDriver=r.to_driver_id;entryType='per_can_to_driver';}
+      else if(r.rule_type==='zone_fee_driver_to_driver'&&r.from_driver_id===o.assigned_driver_id&&r.zone_id===o.zone_id){amount=Math.min(rate,int(o.delivery_fee_cents));targetType='driver';targetDriver=r.to_driver_id;entryType='zone_fee_to_driver';}
+      else if(r.rule_type==='zone_fee_to_driver'&&r.zone_id===o.zone_id&&r.to_driver_id){amount=rate===0?int(o.delivery_fee_cents):Math.min(rate,int(o.delivery_fee_cents));targetType='driver';targetDriver=r.to_driver_id;entryType='zone_fee_to_driver';}
+      if(amount>0)entries.push({order_id:o.id,territory_id:o.territory_id,source_driver_id:o.assigned_driver_id,target_type:targetType,target_driver_id:targetDriver,entry_type:entryType,qty,rate_cents:rate,amount_cents:amount,rule_name:r.name});
+    }
+  }
+  return entries;
+}
+function settlementPeriodReport(period) {
+  const end=period.status==='closed'?(period.ended_at||period.closed_at):now(),driver=one('SELECT id,name FROM drivers WHERE id=?',period.driver_id);
+  const orders=all("SELECT * FROM orders WHERE territory_id=? AND assigned_driver_id=? AND status='completed' AND completed_at>=? AND completed_at<=? ORDER BY completed_at",period.territory_id,period.driver_id,period.started_at,end);
+  const ids=orders.map(x=>x.id),ph=ids.map(()=>'?').join(','),tx=all('SELECT * FROM platform_settlement_transactions WHERE period_id=? ORDER BY created_at',period.id);
+  const entries=platformSettlementEntries(orders);
+  const pays=ids.length?all(`SELECT * FROM payments WHERE order_id IN (${ph}) AND status='received'`,...ids):[];
+  const webQty=orders.filter(o=>o.source==='web').reduce((s,o)=>s+platformOrderQty(o.id),0),offsiteOrderQty=orders.filter(o=>o.source!=='web').reduce((s,o)=>s+platformOrderQty(o.id),0);
+  const manualOffsite=tx.filter(x=>x.kind==='offsite_sale').reduce((s,x)=>s+int(x.qty),0),selfQty=tx.filter(x=>x.kind==='taken_for_self').reduce((s,x)=>s+int(x.qty),0),otherQty=tx.filter(x=>x.kind==='other_adjustment').reduce((s,x)=>s+int(x.qty),0);
+  const accountable=webQty+offsiteOrderQty+manualOffsite+selfQty+otherQty;
+  const bossOrderShare=entries.filter(x=>x.source_driver_id===period.driver_id&&x.target_type==='boss').reduce((s,x)=>s+int(x.amount_cents),0);
+  const bossRate=int(one("SELECT amount_cents FROM settlement_rules WHERE territory_id=? AND from_driver_id=? AND rule_type='per_can_driver_to_boss' AND active=1 AND archived=0 ORDER BY sort_order LIMIT 1",period.territory_id,period.driver_id)?.amount_cents);
+  const manualBossShare=(manualOffsite+selfQty+otherQty)*bossRate,bossShare=bossOrderShare+manualBossShare;
+  const confirmedBossPayments=pays.filter(x=>x.method==='etransfer'&&x.destination_type==='boss').reduce((s,x)=>s+int(x.amount_cents),0),manualBossCredits=tx.filter(x=>x.kind==='boss_credit').reduce((s,x)=>s+int(x.amount_cents),0),bossCredit=confirmedBossPayments+manualBossCredits;
+  const netBossDue=bossShare-bossCredit,sendToBoss=Math.max(0,netBossDue),bossOwesDriver=Math.max(0,-netBossDue),cashInHand=pays.filter(x=>x.method==='cash'&&x.destination_type==='driver'&&(!x.destination_driver_id||x.destination_driver_id===period.driver_id)).reduce((s,x)=>s+int(x.amount_cents),0)+tx.filter(x=>x.kind==='cash_collected').reduce((s,x)=>s+int(x.amount_cents),0);
+  const owesDrivers=entries.filter(x=>x.source_driver_id===period.driver_id&&x.target_type==='driver').reduce((s,x)=>s+int(x.amount_cents),0),receivesDrivers=entries.filter(x=>x.target_driver_id===period.driver_id&&x.source_driver_id!==period.driver_id).reduce((s,x)=>s+int(x.amount_cents),0),driverKeeps=cashInHand+bossOwesDriver+receivesDrivers-sendToBoss-owesDrivers;
+  const deliveryFees=orders.reduce((s,o)=>s+int(o.delivery_fee_cents),0),tips=orders.reduce((s,o)=>s+int(o.tip_cents),0),driverTips=orders.filter(o=>o.tip_recipient_type!=='other_driver'&&(!o.tip_recipient_driver_id||o.tip_recipient_driver_id===period.driver_id)).reduce((s,o)=>s+int(o.tip_cents),0);
+  const starting=period.starting_inventory==null?null:int(period.starting_inventory),expected=starting==null?null:starting-accountable,actual=period.actual_ending_inventory==null?null:int(period.actual_ending_inventory);
+  return {period:{...period},driver,closed:period.status==='closed',started_at:period.started_at,ended_at:end,sold_website:webQty,sold_off_website:offsiteOrderQty+manualOffsite,taken_for_self:selfQty,other_adjustments:otherQty,accountable_items:accountable,boss_rate_cents:bossRate,boss_share_before_credits_cents:bossShare,boss_credit_cents:bossCredit,send_to_boss_cents:sendToBoss,boss_owes_driver_cents:bossOwesDriver,cash_in_driver_hands_cents:cashInHand,driver_keeps_cents:driverKeeps,owes_other_drivers_cents:owesDrivers,receives_from_drivers_cents:receivesDrivers,delivery_fees_cents:deliveryFees,tips_cents:tips,driver_tips_cents:driverTips,starting_inventory:starting,expected_ending_inventory:expected,actual_ending_inventory:actual,variance:actual==null||expected==null?null:actual-expected,orders:orders.map(o=>({id:o.id,order_no:o.order_no,source:o.source,qty:platformOrderQty(o.id),completed_at:o.completed_at,total_cents:o.total_cents,delivery_fee_cents:o.delivery_fee_cents,tip_cents:o.tip_cents})),payments:pays,transactions:tx,entries};
+}
+function settlementDashboard(territoryId){const drivers=all('SELECT id,name,role FROM drivers WHERE territory_id=? AND active=1 AND archived=0 ORDER BY name',territoryId);return{drivers:drivers.map(d=>settlementPeriodReport(openSettlementPeriod(territoryId,d.id))),history:all("SELECT p.*,d.name driver_name FROM platform_settlement_periods p JOIN drivers d ON d.id=p.driver_id WHERE p.territory_id=? AND p.status='closed' ORDER BY p.closed_at DESC LIMIT 100",territoryId).map(x=>({...x,snapshot:safeJson(x.snapshot_json,{})}))};}
+function closeSettlementPeriod(periodId,body){const p=one("SELECT * FROM platform_settlement_periods WHERE id=? AND status='open'",periodId);if(!p)throw new Error('Open settlement not found');if(body.actual_ending_inventory!==undefined)run('UPDATE platform_settlement_periods SET actual_ending_inventory=?,updated_at=? WHERE id=?',int(body.actual_ending_inventory),now(),periodId);const fresh=one('SELECT * FROM platform_settlement_periods WHERE id=?',periodId),snap=settlementPeriodReport(fresh),t=now();run("UPDATE platform_settlement_periods SET status='closed',ended_at=?,closed_at=?,snapshot_json=?,updated_at=? WHERE id=?",t,t,jsonText({...snap,closed:true}),t,periodId);run("INSERT INTO platform_settlement_audit(id,period_id,action,reason,snapshot_json,created_at) VALUES(?,?,'closed',?,?,?)",id(),periodId,text(body.reason)||'Settlement closed',jsonText(snap),t);return{...snap,closed:true};}
+function reopenSettlementPeriod(periodId,reason){const why=text(reason);if(!why)throw new Error('A reason is required to reopen a settlement');const p=one("SELECT * FROM platform_settlement_periods WHERE id=? AND status='closed'",periodId);if(!p)throw new Error('Closed settlement not found');if(one("SELECT 1 FROM platform_settlement_periods WHERE territory_id=? AND driver_id=? AND status='open'",p.territory_id,p.driver_id))throw new Error('Close the current open period before reopening this one');const t=now();run("UPDATE platform_settlement_periods SET status='open',ended_at=NULL,closed_at=NULL,reopened_at=?,updated_at=? WHERE id=?",t,t,periodId);run("INSERT INTO platform_settlement_audit(id,period_id,action,reason,snapshot_json,created_at) VALUES(?,?,'reopened',?,?,?)",id(),periodId,why,p.snapshot_json,t);return settlementPeriodReport(one('SELECT * FROM platform_settlement_periods WHERE id=?',periodId));}
 
 async function handlePlatform(req, res, url) {
   if (!ensurePlatform()) return send(res, 503, { error: 'Platform extension is still starting' });
@@ -1207,6 +1285,22 @@ async function handlePlatform(req, res, url) {
   if (productRating && req.method === 'PUT') return send(res,200,saveProductRating(decodeURIComponent(productRating[1]),await readBody(req)));
   if (productRating && req.method === 'DELETE') { run('DELETE FROM platform_product_ratings WHERE product_id=?',decodeURIComponent(productRating[1])); return send(res,200,{ok:true}); }
   if (url.pathname === '/api/admin/platform/product-ratings' && req.method === 'GET') return send(res,200,all(`SELECT p.id product_id,p.brand,p.flavor,p.strength,r.rating,r.review_count,r.enabled FROM products p LEFT JOIN platform_product_ratings r ON r.product_id=p.id WHERE p.active=1 AND p.archived=0 ORDER BY p.brand,p.flavor`));
+
+  const settlementDash=url.pathname.match(/^\/api\/admin\/platform\/territories\/([^/]+)\/settlements$/);
+  if(settlementDash&&req.method==='GET')return send(res,200,settlementDashboard(decodeURIComponent(settlementDash[1])));
+  const settlementPeriod=url.pathname.match(/^\/api\/admin\/platform\/settlement-periods\/([^/]+)$/);
+  if(settlementPeriod&&req.method==='PUT'){
+    const pid=decodeURIComponent(settlementPeriod[1]),p=one("SELECT * FROM platform_settlement_periods WHERE id=? AND status='open'",pid);if(!p)throw new Error('Open settlement not found');const b=await readBody(req);
+    run('UPDATE platform_settlement_periods SET starting_inventory=?,actual_ending_inventory=?,updated_at=? WHERE id=?',b.starting_inventory===''||b.starting_inventory==null?null:int(b.starting_inventory),b.actual_ending_inventory===''||b.actual_ending_inventory==null?null:int(b.actual_ending_inventory),now(),pid);return send(res,200,settlementPeriodReport(one('SELECT * FROM platform_settlement_periods WHERE id=?',pid)));
+  }
+  const settlementTx=url.pathname.match(/^\/api\/admin\/platform\/settlement-periods\/([^/]+)\/transactions$/);
+  if(settlementTx&&req.method==='POST'){
+    const pid=decodeURIComponent(settlementTx[1]),p=one("SELECT * FROM platform_settlement_periods WHERE id=? AND status='open'",pid);if(!p)throw new Error('Open settlement not found');const b=await readBody(req),allowed=new Set(['offsite_sale','taken_for_self','boss_credit','other_adjustment','cash_collected']);if(!allowed.has(text(b.kind)))throw new Error('Choose a valid settlement entry');if(!text(b.note))throw new Error('A note is required');run('INSERT INTO platform_settlement_transactions(id,period_id,territory_id,driver_id,kind,qty,amount_cents,note,created_at) VALUES(?,?,?,?,?,?,?,?,?)',id(),pid,p.territory_id,p.driver_id,text(b.kind),Math.max(0,int(b.qty)),Math.max(0,int(b.amount_cents)),text(b.note),now());return send(res,201,settlementPeriodReport(p));
+  }
+  const settlementClose=url.pathname.match(/^\/api\/admin\/platform\/settlement-periods\/([^/]+)\/close$/);
+  if(settlementClose&&req.method==='POST')return send(res,200,closeSettlementPeriod(decodeURIComponent(settlementClose[1]),await readBody(req)));
+  const settlementReopen=url.pathname.match(/^\/api\/admin\/platform\/settlement-periods\/([^/]+)\/reopen$/);
+  if(settlementReopen&&req.method==='POST'){const b=await readBody(req);return send(res,200,reopenSettlementPeriod(decodeURIComponent(settlementReopen[1]),b.reason));}
 
   const adminOrderCustomer = url.pathname.match(/^\/api\/admin\/platform\/orders\/([^/]+)\/customer$/);
   if (adminOrderCustomer && req.method === 'GET') { const oid=decodeURIComponent(adminOrderCustomer[1]); if(!one('SELECT 1 FROM orders WHERE id=?',oid))return send(res,404,{error:'Order not found'}); return send(res,200,customerSummaryForOrder(oid,{includeNotes:true})); }

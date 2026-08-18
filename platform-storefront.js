@@ -81,7 +81,7 @@
     const p=config.profile||{}; const g=document.createElement('div');g.id='pvAgeGate';g.className='pv-gate';
     g.innerHTML=`<div class="pv-gate-card"><div style="font-size:13px;font-weight:900;letter-spacing:.12em">${E(p.business_name||'POUCHES VIC')}</div><h1>${E(p.entry_age_gate_title||'19+ ONLY')}</h1><p>${E(p.entry_age_gate_text||'You must be 19 or older to enter this site.')}</p><button class="pv-gate-btn primary" id="pvAgeYes">YES, I’M 19+</button><button class="pv-gate-btn secondary" id="pvAgeNo">NO, I’M NOT</button></div>`;
     document.body.appendChild(g);
-    document.getElementById('pvAgeYes').onclick=()=>{sessionStorage.setItem('pv_entry_age_ok','1');g.remove();showAddressGateIfNeeded();};
+    document.getElementById('pvAgeYes').onclick=()=>{sessionStorage.setItem('pv_entry_age_ok','1');g.remove();setTimeout(showAddressGateIfNeeded,0);};
     document.getElementById('pvAgeNo').onclick=()=>{g.querySelector('.pv-gate-card').innerHTML='<h1>Sorry</h1><p>You must meet the age requirement to enter this site.</p>';};
   }
 
@@ -103,7 +103,6 @@
       if(config?.modules?.delivery_method_step?.enabled) return showMethodGate(g);
       g.remove();
     };
-    setTimeout(()=>input.focus(),100);
   }
 
   async function mapboxSuggestions(q){
@@ -165,7 +164,7 @@
     if(!config?.modules?.product_ratings?.enabled || !territoryUi?.ratings?.length || !window.data)return;
     const ratings=new Map(territoryUi.ratings.map(r=>[r.product_id,r]));
     const list=(window.data.products||[]).filter(p=>!window.activeBrand||p.brand===window.activeBrand),rows=[...document.querySelectorAll('#products .product-row')];
-    rows.forEach((row,i)=>{row.querySelector('.pv-rating')?.remove();const p=list[i],r=p&&ratings.get(p.id);if(!r)return;const rounded=Math.max(0,Math.min(5,Math.round(Number(r.rating)||0))),stars='★'.repeat(rounded)+'☆'.repeat(5-rounded);const el=document.createElement('div');el.className='pv-rating';el.innerHTML=`<span class="stars">${stars}</span> <b>${Number(r.rating).toFixed(1)}</b>${Number(r.review_count)>0?`<span class="count">(${Number(r.review_count)})</span>`:''}`;(row.querySelector('.pmeta')||row.querySelector('.pname'))?.insertAdjacentElement('afterend',el);});
+    rows.forEach((row,i)=>{const p=list[i],r=p&&ratings.get(p.id),existing=row.querySelector('.pv-rating');if(!r){existing?.remove();return;}const signature=`${r.rating}:${r.review_count}`,rounded=Math.max(0,Math.min(5,Math.round(Number(r.rating)||0))),stars='★'.repeat(rounded)+'☆'.repeat(5-rounded);if(existing?.dataset.signature===signature)return;existing?.remove();const el=document.createElement('div');el.className='pv-rating';el.dataset.signature=signature;el.innerHTML=`<span class="stars">${stars}</span> <b>${Number(r.rating).toFixed(1)}</b>${Number(r.review_count)>0?`<span class="count">(${Number(r.review_count)})</span>`:''}`;(row.querySelector('.pmeta')||row.querySelector('.pname'))?.insertAdjacentElement('afterend',el);});
   }
 
   function enhanceCheckout(){
@@ -206,9 +205,8 @@
     for(let i=0;i<100;i++){if(window.data&&window.currentSlug)break;await sleep(80);}
     if(location.pathname.startsWith('/order/')){applyGenericLabels();renderSocialLinks();return;}
     watchedSlug=window.currentSlug||'victoria';await onTerritoryReady(watchedSlug);patchQuote();patchProductRender();showAgeGate();
-    const observer=new MutationObserver(()=>{enhanceCheckout();renderRatings();insertConfirmationBadge();});observer.observe(document.body,{subtree:true,childList:true});
     const timer=setInterval(async()=>{
-      patchQuote();patchProductRender();enhanceCheckout();applyGenericLabels();renderRatings();renderSocialLinks();
+      patchQuote();patchProductRender();enhanceCheckout();applyGenericLabels();renderRatings();renderSocialLinks();insertConfirmationBadge();
       const slug=window.currentSlug||'victoria';if(slug!==watchedSlug){watchedSlug=slug;sessionStorage.removeItem('pv_delivery_address_'+slug);await onTerritoryReady(slug);showAddressGateIfNeeded(true);}
     },650);
     window.addEventListener('beforeunload',()=>clearInterval(timer),{once:true});
