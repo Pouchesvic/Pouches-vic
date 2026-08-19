@@ -9,7 +9,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const Database = require('better-sqlite3');
+const Database = require('./sqlite');
 const webpush = require('web-push');
 const { URL } = require('url');
 
@@ -439,10 +439,11 @@ function readBody(req, limit = 1024 * 1024) {
     req.on('error', reject);
   });
 }
-function injectHtml(file, scriptPath) {
+function injectHtml(file, scriptPaths) {
   const p = path.join(__dirname, file);
   let html = fs.readFileSync(p, 'utf8');
-  if (scriptPath && !html.includes(scriptPath)) {
+  for (const scriptPath of (Array.isArray(scriptPaths) ? scriptPaths : [scriptPaths]).filter(Boolean)) {
+    if (html.includes(scriptPath)) continue;
     const scriptFile=path.join(__dirname,scriptPath.replace(/^\//,'')),version=fs.existsSync(scriptFile)?Math.trunc(fs.statSync(scriptFile).mtimeMs):Date.now();
     html = html.replace('</body>', `<script src="${scriptPath}?v=${version}"></script></body>`);
   }
@@ -528,6 +529,7 @@ function saveConfig(body) {
 }
 
 function ensureTerritoryProduct(territoryId, productId) {
+  if(globalThis.pvCompanyStock)return globalThis.pvCompanyStock.ensureTerritoryProduct(territoryId,productId);
   let tp = one('SELECT * FROM territory_products WHERE territory_id=? AND product_id=?', territoryId, productId);
   if (!tp) {
     const t = now();
@@ -552,6 +554,10 @@ function receiveByBarcode({ barcode, territory_id, qty, note = '', created_by_ro
   const tid = text(territory_id);
   const p = productByBarcode(barcode, tid);
   if (!p) return { found: false, barcode: text(barcode) };
+  if(globalThis.pvCompanyStock){
+    const balance=openDb().transaction(()=>globalThis.pvCompanyStock.adjustTerritory({territoryId:tid,productId:p.id,qtyDelta:q,movementType:'barcode_receive',note:text(note)||`Barcode receive ${text(barcode)}`,role:created_by_role}))();
+    return { found:true,product:productByBarcode(barcode,tid),received:q,balance };
+  }
   const tx = openDb().transaction(() => {
     const tp = ensureTerritoryProduct(tid, p.id);
     const balance = int(tp.inventory) + q;
@@ -1418,7 +1424,7 @@ http.createServer = function patchedCreateServer(listener) {
 
     try {
       if (req.method === 'GET' && (url.pathname === '/admin' || url.pathname === '/admin.html')) {
-        return send(res, 200, injectHtml('admin.html', '/platform-admin.js'), 'text/html; charset=utf-8');
+        return send(res, 200, injectHtml('admin.html', ['/platform-admin.js','/company-admin.js']), 'text/html; charset=utf-8');
       }
       if (req.method === 'GET' && (url.pathname === '/driver' || url.pathname === '/driver.html')) {
         return send(res, 200, injectHtml('driver.html', '/platform-driver.js'), 'text/html; charset=utf-8');
@@ -1428,6 +1434,7 @@ http.createServer = function patchedCreateServer(listener) {
       }
       if (req.method === 'GET' && url.pathname === '/scanner') return serveFile(res, 'scanner.html', 'text/html; charset=utf-8');
       if (req.method === 'GET' && url.pathname === '/platform-admin.js') return serveFile(res, 'platform-admin.js', 'application/javascript; charset=utf-8');
+      if (req.method === 'GET' && url.pathname === '/company-admin.js') return serveFile(res, 'company-admin.js', 'application/javascript; charset=utf-8');
       if (req.method === 'GET' && url.pathname === '/platform-driver.js') return serveFile(res, 'platform-driver.js', 'application/javascript; charset=utf-8');
       if (req.method === 'GET' && url.pathname === '/platform-storefront.js') return serveFile(res, 'platform-storefront.js', 'application/javascript; charset=utf-8');
 

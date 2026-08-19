@@ -360,6 +360,15 @@
 
   window.pvOpenStorefrontTools=openStorefrontTools;window.pvOpenCustomers=openCustomers;window.pvOpenRatings=openRatings;
 
+  // Keep stable settlement/database identifiers such as boss_credit unchanged, while
+  // translating every rendered Control Room label (including legacy saved rule names).
+  function applyCompanyTerminology(root=document.body){
+    if(!root)return;const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);let node;
+    while((node=walker.nextNode()))if(/\bboss\b/i.test(node.nodeValue||''))node.nodeValue=node.nodeValue.replace(/\bboss\b/gi,'Company');
+  }
+  const companyTerminologyObserver=new MutationObserver(rows=>rows.forEach(row=>row.addedNodes.forEach(node=>applyCompanyTerminology(node.nodeType===Node.TEXT_NODE?node.parentNode:node))));
+  companyTerminologyObserver.observe(document.body,{childList:true,subtree:true});applyCompanyTerminology();
+
   async function boot(){for(let i=0;i<100;i++){if(document.getElementById('app')&&typeof api==='function')break;await wait(80);}const timer=setInterval(()=>{if(document.getElementById('app')?.classList.contains('hidden'))return;installExtraButtons();patchOrderCustomer();installSettlementView();renderInlineRatings();},500);window.addEventListener('beforeunload',()=>clearInterval(timer),{once:true});}
   boot();
 })();

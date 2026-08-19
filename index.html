@@ -35,7 +35,7 @@ button{touch-action:manipulation}
 .inventory{display:flex;flex-direction:column;gap:10px}
 .product-row{background:#fff;border-radius:18px;padding:12px;display:grid;grid-template-columns:82px 1fr;gap:12px;align-items:center}
 .thumb{width:82px;height:82px;background:#f3f3f1;border-radius:14px;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:10px;font-weight:900;text-align:center}
-.thumb img{width:100%;height:100%;object-fit:cover}
+.thumb img{width:100%;height:100%;object-fit:contain;padding:4px}
 .pname{font-size:17px;font-weight:1000;text-transform:uppercase;line-height:1.05}
 .pmeta{font-size:13px;color:var(--muted);margin-top:4px}
 .price-stock{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px}
@@ -178,7 +178,7 @@ function renderProducts(){
   $('products').innerHTML=list.length?list.map(p=>{
     const q=clampQty(p.id,cart[p.id]||0), max=Number(p.inventory)||0, base=unitPriceCents(Math.max(1,cartQty()||1),p);
     return `<div class="product-row">
-      <div class="thumb">${p.image?`<img src="${esc(p.image)}" alt="">`:'PRODUCT PHOTO'}</div>
+      <div class="thumb">${p.image?`<img src="${esc(p.image)}" alt="${esc(p.brand+' '+p.flavor)}" onerror="this.onerror=null;this.src='/product-images/catalog-placeholder.webp'">`:'PRODUCT PHOTO'}</div>
       <div>
         <div class="pname">${esc(p.flavor)}</div>
         <div class="pmeta">${esc(p.brand)}${p.strength?' • '+esc(displayStrength(p.strength)):''}</div>
