@@ -39,6 +39,12 @@ function safeJson(v, d = null) { try { return JSON.parse(v); } catch { return d;
 function jsonText(v) { return JSON.stringify(v == null ? null : v); }
 function htmlEscape(s) { return String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function money(c) { return `$${dollars(c).toFixed(2)}`; }
+function displayStrength(value) {
+  const s=text(value);
+  if(!s)return '';
+  if(/mg\s*$/i.test(s))return s.replace(/\s*mg\s*$/i,' mg');
+  return /^\d+(?:\.\d+)?$/.test(s)?`${s} mg`:s;
+}
 function normalizePhone(v) { return text(v); }
 function normalizeEmail(v) { return lower(v); }
 function validEmail(v) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(v)); }
@@ -474,6 +480,11 @@ function ensureColumn(table, name, def) {
   ['orders','inventory_applied','INTEGER NOT NULL DEFAULT 1'],
   ['orders','confirmation_email_status',"TEXT DEFAULT ''"],
   ['orders','confirmation_email_message',"TEXT DEFAULT ''"],
+  ['orders','normal_delivery_fee_cents','INTEGER NOT NULL DEFAULT 0'],
+  ['orders','delivery_savings_cents','INTEGER NOT NULL DEFAULT 0'],
+  ['orders','delivery_discount_reason',"TEXT DEFAULT ''"],
+  ['orders','driver_archived_at','TEXT'],
+  ['orders','driver_restored_at','TEXT'],
   ['orders','updated_at','TEXT'],
   ['orders','cancelled_at','TEXT'],
   ['order_items','unit_price_cents','INTEGER NOT NULL DEFAULT 0'],
@@ -493,6 +504,8 @@ function backfillMoneyColumns() {
   run(`UPDATE orders SET customer_discount_cents=MAX(0,pre_discount_total_cents-total_cents) WHERE customer_discount_cents=0`);
   run(`UPDATE orders SET zone_fee_snapshot_cents=CAST(ROUND(zone_fee_snapshot*100) AS INTEGER) WHERE zone_fee_snapshot_cents=0 AND zone_fee_snapshot!=0`);
   run(`UPDATE orders SET zone_fee_override_cents=CAST(ROUND(zone_fee_override*100) AS INTEGER) WHERE zone_fee_override IS NOT NULL AND zone_fee_override_cents IS NULL`);
+  run(`UPDATE orders SET normal_delivery_fee_cents=zone_fee_snapshot_cents WHERE normal_delivery_fee_cents=0 AND zone_fee_snapshot_cents>0`);
+  run(`UPDATE orders SET delivery_savings_cents=MAX(0,normal_delivery_fee_cents-delivery_fee_cents) WHERE delivery_savings_cents=0 AND normal_delivery_fee_cents>delivery_fee_cents`);
   run(`UPDATE order_items SET unit_price_cents=CAST(ROUND(unit_price*100) AS INTEGER) WHERE unit_price_cents=0 AND unit_price!=0`);
   run(`UPDATE order_items SET line_total_cents=CAST(ROUND(line_total*100) AS INTEGER) WHERE line_total_cents=0 AND line_total!=0`);
   run(`UPDATE order_adjustments SET amount_cents=CAST(ROUND(amount*100) AS INTEGER) WHERE amount_cents=0 AND amount!=0`);
@@ -537,6 +550,8 @@ function seed() {
     insR.run(id(),vic,'Driver 2 Pink fee share to Driver 1',1,0,'zone_fee_driver_to_driver',d2,d1,pink,5,500,'On Driver 2 Pink deliveries, $5 of charged fee is owed to Driver 1.',3,t,t);
     insR.run(id(),vic,'Green fee goes to Driver 1',1,0,'zone_fee_to_driver',null,d1,green,0,0,'Amount 0 means use the actual charged delivery fee.',4,t,t);
   }
+
+  if(!one("SELECT 1 FROM settings WHERE key='minimum_order_qty'")) setSetting('minimum_order_qty','5');
 
   const defaults = {
     round_down_to_cents: '500',
@@ -725,6 +740,19 @@ function pointInGeoJSON(lng,lat,geojsonText) {
   if(geom.type==='MultiPolygon') return geom.coordinates.some(poly=>pointInPolygon(p,poly));
   return false;
 }
+function validatedZoneGeoJson(value) {
+  if(value==null||text(value)==='')return '';
+  const parsed=typeof value==='string'?safeJson(value):value;
+  if(!parsed||typeof parsed!=='object')throw new Error('Zone GeoJSON must be valid JSON');
+  const geom=parsed.type==='Feature'?parsed.geometry:parsed;
+  if(!geom||!['Polygon','MultiPolygon'].includes(geom.type))throw new Error('Zone GeoJSON must be a Polygon, MultiPolygon, or Feature containing one');
+  const validPosition=p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(Number(p[0]))&&Number.isFinite(Number(p[1]))&&Number(p[0])>=-180&&Number(p[0])<=180&&Number(p[1])>=-90&&Number(p[1])<=90;
+  const validRing=ring=>Array.isArray(ring)&&ring.length>=4&&ring.every(validPosition)&&Number(ring[0][0])===Number(ring.at(-1)[0])&&Number(ring[0][1])===Number(ring.at(-1)[1]);
+  const validPolygon=poly=>Array.isArray(poly)&&poly.length>0&&poly.every(validRing);
+  const valid=geom.type==='Polygon'?validPolygon(geom.coordinates):Array.isArray(geom.coordinates)&&geom.coordinates.length>0&&geom.coordinates.every(validPolygon);
+  if(!valid)throw new Error('Zone GeoJSON coordinates must contain closed polygon rings with valid longitude/latitude pairs');
+  return jsonText(parsed);
+}
 function detectZone(tid,lng,lat) {
   if(!Number.isFinite(Number(lng))||!Number.isFinite(Number(lat))) return null;
   const zones=all('SELECT * FROM delivery_zones WHERE territory_id=? AND active=1 ORDER BY sort_order,name',tid);
@@ -768,14 +796,19 @@ function calculateOrder({territory,items,zone,delivery_fee_override_cents=null})
     x.line_cents=x.unit_cents*x.q;
     subtotal+=x.line_cents;
   }
-  let delivery=zone ? int(zone.fee_cents ?? cents(zone.fee)) : 0;
-  if(zone && zone.free_at_qty!=null && qty>=zone.free_at_qty) delivery=0;
-  if(delivery_fee_override_cents!=null) delivery=Math.max(0,int(delivery_fee_override_cents));
+  const normalDelivery=zone ? int(zone.fee_cents ?? cents(zone.fee)) : 0;
+  let delivery=normalDelivery,deliveryReason='';
+  if(zone && lower(zone.name)==='green' && qty>=10){delivery=0;deliveryReason='10+ Can Delivery Reward';}
+  if(delivery_fee_override_cents!=null){
+    delivery=Math.max(0,int(delivery_fee_override_cents));
+    deliveryReason=delivery<normalDelivery?'VIP Customer Discount':'';
+  }
+  const deliverySavings=Math.max(0,normalDelivery-delivery);
   const pre=subtotal+delivery;
   const roundStep=int(setting('round_down_to_cents','500'),500);
   const total=roundDown(pre,roundStep);
   const discount=Math.max(0,pre-total);
-  return {qty,subtotal_cents:subtotal,delivery_fee_cents:delivery,pre_discount_total_cents:pre,customer_discount_cents:discount,total_cents:total};
+  return {qty,subtotal_cents:subtotal,normal_delivery_fee_cents:normalDelivery,delivery_fee_cents:delivery,delivery_savings_cents:deliverySavings,delivery_discount_reason:deliverySavings?deliveryReason:'',pre_discount_total_cents:pre,customer_discount_cents:discount,total_cents:total};
 }
 function resolveCart(territory,cart,{allow_unlisted=false}={}) {
   const out=[];
@@ -829,6 +862,9 @@ function createOrderCore(b,{source='web',created_by_role='customer',created_by_d
   const territory=publicTerritory(text(b.territory_slug)||'victoria') || one('SELECT * FROM territories WHERE id=? AND active=1 AND archived=0',text(b.territory_id));
   if(!territory) throw new Error('Territory unavailable');
   const items=resolveCart(territory,b.items,{allow_unlisted});
+  const requestedQty=items.reduce((sum,x)=>sum+x.q,0);
+  const minimumOrderQty=Math.max(1,int(setting('minimum_order_qty','5'),5));
+  if(source==='web'&&requestedQty<minimumOrderQty)throw new Error(`Minimum order is ${minimumOrderQty} cans`);
 
   let zone=null;
   if(b.zone_id) zone=one('SELECT * FROM delivery_zones WHERE id=? AND territory_id=? AND active=1',text(b.zone_id),territory.id);
@@ -836,6 +872,7 @@ function createOrderCore(b,{source='web',created_by_role='customer',created_by_d
   if(!zone && b.address_lng!=null && b.address_lat!=null) zone=detectZone(territory.id,num(b.address_lng),num(b.address_lat));
   const deliveryOverride=b.delivery_fee_cents!=null?int(b.delivery_fee_cents):(b.delivery_fee!=null?cents(b.delivery_fee):null);
   const math=calculateOrder({territory,items,zone,delivery_fee_override_cents:deliveryOverride});
+  if(math.delivery_savings_cents>0&&text(b.delivery_discount_reason))math.delivery_discount_reason=text(b.delivery_discount_reason);
   const customerEmail=normalizeEmail(b.customer_email);
   if(customerEmail && !validEmail(customerEmail)) throw new Error('Enter a valid email address or leave it blank');
   const paymentMethod=normalizePaymentMethod(b.payment_method);
@@ -855,6 +892,8 @@ function createOrderCore(b,{source='web',created_by_role='customer',created_by_d
         id(),oid,x.p.id,x.p.flavor,x.p.brand,x.p.strength,x.q,dollars(x.unit_cents),x.unit_cents,dollars(x.line_cents),x.line_cents);
       applyInventoryMovement({territory_id:territory.id,product_id:x.p.id,qty_delta:-x.q,movement_type:source==='web'?'web_sale':source,order_id:oid,driver_id:assignedDriverId,note:`Order #${ono}`,created_by_role,created_by_driver_id});
     }
+
+    run(`UPDATE orders SET normal_delivery_fee_cents=?,delivery_savings_cents=?,delivery_discount_reason=? WHERE id=?`,math.normal_delivery_fee_cents,math.delivery_savings_cents,math.delivery_discount_reason,oid);
 
     const paymentAmount=b.payment_amount_cents!=null?int(b.payment_amount_cents):(b.payment_amount!=null?cents(b.payment_amount):0);
     if(paymentAmount){
@@ -984,9 +1023,10 @@ function settlementSummary(tid) {
 function orderStatusUrl(o){ return `${PUBLIC_BASE_URL}/order/${encodeURIComponent(o.customer_token)}`; }
 function smsHref(number,message=''){ const n=text(number).replace(/[^+\d]/g,''); return n?`sms:${n}${message?`?&body=${encodeURIComponent(message)}`:''}`:''; }
 function orderConfirmationHtml(o) {
-  const items=o.items.map(x=>`<tr><td style="padding:9px 0;border-bottom:1px solid #e7e7e4">${x.qty} × ${htmlEscape(x.brand_snapshot)} ${htmlEscape(x.product_name_snapshot)}${x.strength_snapshot?` • ${htmlEscape(x.strength_snapshot)}`:''}</td><td style="padding:9px 0;border-bottom:1px solid #e7e7e4;text-align:right;white-space:nowrap">${money(x.line_total_cents)}</td></tr>`).join('');
+  const items=o.items.map(x=>`<tr><td style="padding:9px 0;border-bottom:1px solid #e7e7e4">${x.qty} × ${htmlEscape(x.brand_snapshot)} ${htmlEscape(x.product_name_snapshot)}${x.strength_snapshot?` • ${htmlEscape(displayStrength(x.strength_snapshot))}`:''}</td><td style="padding:9px 0;border-bottom:1px solid #e7e7e4;text-align:right;white-space:nowrap">${money(x.line_total_cents)}</td></tr>`).join('');
   const discount=o.customer_discount_cents>0?`<tr><td style="padding-top:7px">${htmlEscape(setting('customer_discount_label','Customer Appreciation Discount'))}</td><td style="padding-top:7px;text-align:right;white-space:nowrap">−${money(o.customer_discount_cents)}</td></tr>`:'';
-  return `<!doctype html><html><body style="margin:0;background:#f2f2ef;color:#171717;font-family:Arial,sans-serif"><div style="max-width:600px;margin:0 auto;padding:24px 14px"><div style="background:#fff;border-radius:18px;padding:24px"><div style="font-size:12px;font-weight:bold;letter-spacing:.08em">POUCHES VIC</div><h1 style="font-size:26px;margin:8px 0">Order #${o.order_no} confirmed</h1><p style="line-height:1.5">Thanks${o.customer_name?`, ${htmlEscape(o.customer_name)}`:''}. We received your order and will keep the live order page updated.</p><table role="presentation" style="width:100%;border-collapse:collapse;margin:18px 0">${items}<tr><td style="padding-top:14px">Products</td><td style="padding-top:14px;text-align:right;white-space:nowrap">${money(o.subtotal_cents)}</td></tr><tr><td style="padding-top:7px">Delivery${o.zone_name_snapshot?` • ${htmlEscape(o.zone_name_snapshot)}`:''}</td><td style="padding-top:7px;text-align:right;white-space:nowrap">${money(o.delivery_fee_cents)}</td></tr>${discount}<tr><td style="font-size:18px;font-weight:bold;border-top:1px solid #171717;padding-top:12px">TOTAL</td><td style="font-size:18px;font-weight:bold;border-top:1px solid #171717;padding-top:12px;text-align:right;white-space:nowrap">${money(o.total_cents)}</td></tr></table><p style="line-height:1.5"><strong>Deliver to</strong><br>${htmlEscape(o.address||'Not provided')}</p><p style="line-height:1.5"><strong>Payment</strong><br>${htmlEscape(paymentLabel(o.payment_method))}</p><p style="margin:24px 0"><a href="${orderStatusUrl(o)}" style="display:block;background:#111;color:#fff;text-align:center;text-decoration:none;font-weight:bold;padding:14px;border-radius:10px">VIEW MY ORDER</a></p><p style="font-size:12px;line-height:1.5;color:#666">Your driver contact button will appear on the live order page after a driver is assigned.</p></div></div></body></html>`;
+  const deliverySavings=int(o.delivery_savings_cents)>0?`<tr><td style="padding-top:7px">${htmlEscape(o.delivery_discount_reason||'Delivery discount')}</td><td style="padding-top:7px;text-align:right;white-space:nowrap">−${money(o.delivery_savings_cents)}</td></tr><tr><td style="padding-top:7px;font-weight:bold">Delivery</td><td style="padding-top:7px;text-align:right;font-weight:bold">${int(o.delivery_fee_cents)===0?'FREE':money(o.delivery_fee_cents)}</td></tr>`:'';
+  return `<!doctype html><html><body style="margin:0;background:#f2f2ef;color:#171717;font-family:Arial,sans-serif"><div style="max-width:600px;margin:0 auto;padding:24px 14px"><div style="background:#fff;border-radius:18px;padding:24px"><div style="font-size:12px;font-weight:bold;letter-spacing:.08em">POUCHES VIC</div><h1 style="font-size:26px;margin:8px 0">Order #${o.order_no} confirmed</h1><p style="line-height:1.5">Thanks${o.customer_name?`, ${htmlEscape(o.customer_name)}`:''}. We received your order and will keep the live order page updated.</p><table role="presentation" style="width:100%;border-collapse:collapse;margin:18px 0">${items}<tr><td style="padding-top:14px">Products</td><td style="padding-top:14px;text-align:right;white-space:nowrap">${money(o.subtotal_cents)}</td></tr><tr><td style="padding-top:7px">${htmlEscape(o.zone_name_snapshot||'Delivery')} Delivery</td><td style="padding-top:7px;text-align:right;white-space:nowrap">${money(o.normal_delivery_fee_cents||o.delivery_fee_cents)}</td></tr>${deliverySavings}${discount}<tr><td style="font-size:18px;font-weight:bold;border-top:1px solid #171717;padding-top:12px">TOTAL</td><td style="font-size:18px;font-weight:bold;border-top:1px solid #171717;padding-top:12px;text-align:right;white-space:nowrap">${money(o.total_cents)}</td></tr></table>${int(o.delivery_savings_cents)>0?`<p style="font-weight:bold;color:#146b2f">You saved ${money(o.delivery_savings_cents)} on delivery.</p>`:''}<p style="line-height:1.5"><strong>Deliver to</strong><br>${htmlEscape(o.address||'Not provided')}</p><p style="line-height:1.5"><strong>Payment</strong><br>${htmlEscape(paymentLabel(o.payment_method))}</p><p style="margin:24px 0"><a href="${orderStatusUrl(o)}" style="display:block;background:#111;color:#fff;text-align:center;text-decoration:none;font-weight:bold;padding:14px;border-radius:10px">VIEW MY ORDER</a></p><p style="font-size:13px;line-height:1.5;color:#4f4f4f">Your driver contact button will appear on the live order page after a driver is assigned.</p></div></div></body></html>`;
 }
 async function sendOrderConfirmation(oid) {
   const o=orderFull(oid);
@@ -1032,7 +1072,7 @@ function territorySnapshot(tid) {
     WHERE tp.territory_id=? AND tp.listed=1 AND p.active=1 AND p.archived=0 AND tp.inventory>0
     ORDER BY tp.featured DESC,tp.sort_order,p.brand,p.flavor`,tid);
   const windows=all('SELECT id,label,start_time,end_time,days_json,capacity,sort_order FROM delivery_windows WHERE territory_id=? AND active=1 ORDER BY sort_order,start_time',tid);
-  return {territory,tiers,zones,products,windows,settings:{mapbox_public_token:setting('mapbox_public_token',''),payment_cash_enabled:setting('payment_cash_enabled','true')==='true',payment_etransfer_enabled:setting('payment_etransfer_enabled','true')==='true',customer_discount_label:setting('customer_discount_label','Customer Appreciation Discount'),round_down_to_cents:int(setting('round_down_to_cents','500'),500),age_acknowledgement_text:setting('age_acknowledgement_text','')}};
+  return {territory,tiers,zones,products,windows,settings:{mapbox_public_token:setting('mapbox_public_token',''),payment_cash_enabled:setting('payment_cash_enabled','true')==='true',payment_etransfer_enabled:setting('payment_etransfer_enabled','true')==='true',customer_discount_label:setting('customer_discount_label','Customer Appreciation Discount'),minimum_order_qty:Math.max(1,int(setting('minimum_order_qty','5'),5)),round_down_to_cents:int(setting('round_down_to_cents','500'),500),age_acknowledgement_text:setting('age_acknowledgement_text','')}};
 }
 function adminBootstrap() {
   return {territories:all('SELECT * FROM territories ORDER BY archived,name'),settings:Object.fromEntries(all('SELECT key,value FROM settings').map(x=>[x.key,x.value]))};
@@ -1057,7 +1097,7 @@ function orderFull(oid) {
   return {...order,items:all('SELECT * FROM order_items WHERE order_id=?',oid),payments:all('SELECT * FROM payments WHERE order_id=? ORDER BY created_at',oid),events:all('SELECT * FROM order_events WHERE order_id=? ORDER BY created_at',oid),adjustments:all('SELECT * FROM order_adjustments WHERE order_id=? ORDER BY created_at',oid)};
 }
 function publicOrderByToken(tok) {
-  const o=one(`SELECT o.id,o.order_no,o.status,o.customer_token,o.customer_name,o.customer_phone,o.customer_email,o.address,o.delivery_notes,o.delivery_window_label,o.zone_name_snapshot,o.payment_method,o.payment_note,o.subtotal_cents,o.delivery_fee_cents,o.pre_discount_total_cents,o.customer_discount_cents,o.total_cents,o.confirmation_email_status,o.created_at,o.completed_at,d.name driver_name,d.customer_contact_number FROM orders o LEFT JOIN drivers d ON d.id=o.assigned_driver_id WHERE o.customer_token=?`,tok);
+  const o=one(`SELECT o.id,o.order_no,o.status,o.customer_token,o.customer_name,o.customer_phone,o.customer_email,o.address,o.delivery_notes,o.delivery_window_label,o.zone_name_snapshot,o.payment_method,o.payment_note,o.subtotal_cents,o.normal_delivery_fee_cents,o.delivery_fee_cents,o.delivery_savings_cents,o.delivery_discount_reason,o.pre_discount_total_cents,o.customer_discount_cents,o.total_cents,o.confirmation_email_status,o.created_at,o.completed_at,d.name driver_name,d.customer_contact_number FROM orders o LEFT JOIN drivers d ON d.id=o.assigned_driver_id WHERE o.customer_token=?`,tok);
   if(!o)return null;
   const items=all('SELECT product_name_snapshot,brand_snapshot,strength_snapshot,qty,unit_price_cents,line_total_cents FROM order_items WHERE order_id=?',o.id);
   const events=all('SELECT event_type,message,created_at FROM order_events WHERE order_id=? AND visible_to_customer=1 ORDER BY created_at',o.id);
@@ -1075,7 +1115,7 @@ function saveTerritoryEntity(kind,tid,b) {
   }
   if(kind==='zone'){
     const feeC=b.fee_cents!=null?int(b.fee_cents):cents(b.fee);
-    const geo=typeof b.geojson==='object'?jsonText(b.geojson):text(b.geojson);
+    const geo=validatedZoneGeoJson(b.geojson);
     if(b.id) run(`UPDATE delivery_zones SET name=?,color_label=?,fee=?,fee_cents=?,free_at_qty=?,active=?,description=?,rule_notes=?,geojson=?,sort_order=? WHERE id=? AND territory_id=?`,text(b.name),text(b.color_label),dollars(feeC),feeC,b.free_at_qty===''||b.free_at_qty==null?null:int(b.free_at_qty),bool(b.active),text(b.description),text(b.rule_notes),geo,int(b.sort_order),b.id,tid);
     else run(`INSERT INTO delivery_zones(id,territory_id,name,color_label,fee,fee_cents,free_at_qty,active,description,rule_notes,geojson,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,id(),tid,text(b.name),text(b.color_label),dollars(feeC),feeC,b.free_at_qty===''||b.free_at_qty==null?null:int(b.free_at_qty),bool(b.active??true),text(b.description),text(b.rule_notes),geo,int(b.sort_order));
   }
@@ -1164,7 +1204,7 @@ const server=http.createServer(async(req,res)=>{
       await sendOrderConfirmation(o.id);
       await sendBusinessNewOrderNotification(o.id);
       const fresh=orderFull(o.id);
-      return send(res,201,{id:fresh.id,order_no:fresh.order_no,subtotal_cents:fresh.subtotal_cents,delivery_fee_cents:fresh.delivery_fee_cents,pre_discount_total_cents:fresh.pre_discount_total_cents,customer_discount_cents:fresh.customer_discount_cents,total_cents:fresh.total_cents,zone_name:fresh.zone_name_snapshot,confirmation_email_status:fresh.confirmation_email_status,status_url:orderStatusUrl(fresh)});
+      return send(res,201,{id:fresh.id,order_no:fresh.order_no,subtotal_cents:fresh.subtotal_cents,normal_delivery_fee_cents:fresh.normal_delivery_fee_cents,delivery_fee_cents:fresh.delivery_fee_cents,delivery_savings_cents:fresh.delivery_savings_cents,delivery_discount_reason:fresh.delivery_discount_reason,pre_discount_total_cents:fresh.pre_discount_total_cents,customer_discount_cents:fresh.customer_discount_cents,total_cents:fresh.total_cents,zone_name:fresh.zone_name_snapshot,confirmation_email_status:fresh.confirmation_email_status,status_url:orderStatusUrl(fresh)});
     }
     const pubOrder=url.pathname.match(/^\/api\/public\/orders\/token\/([^/]+)$/);
     if(pubOrder&&req.method==='GET'){
@@ -1302,6 +1342,8 @@ const server=http.createServer(async(req,res)=>{
       const pre=int(o.subtotal_cents)+delivery; const total=roundDown(pre,int(setting('round_down_to_cents','500'),500)); const discount=Math.max(0,pre-total);
       const completed=status==='completed'?(o.completed_at||now()):(status==='cancelled'?null:o.completed_at);
       run(`UPDATE orders SET status=?,assigned_driver_id=?,delivery_fee=?,delivery_fee_cents=?,pre_discount_total_cents=?,customer_discount_cents=?,total=?,total_cents=?,rounding_adjustment=?,payment_method=?,payment_note=?,zone_override_note=?,completed_at=?,updated_at=? WHERE id=?`,status,driver,dollars(delivery),delivery,pre,discount,dollars(total),total,dollars(total-pre),text(b.payment_method)||o.payment_method,text(b.payment_note)||o.payment_note,text(b.zone_override_note)||o.zone_override_note,completed,now(),oid);
+      const normalDelivery=Math.max(int(o.normal_delivery_fee_cents),int(o.zone_fee_snapshot_cents),delivery),deliverySavings=Math.max(0,normalDelivery-delivery);
+      run('UPDATE orders SET normal_delivery_fee_cents=?,delivery_savings_cents=?,delivery_discount_reason=? WHERE id=?',normalDelivery,deliverySavings,deliverySavings?(text(b.zone_override_note)||text(o.delivery_discount_reason)||'Admin delivery adjustment'):'',oid);
       if(driver!==o.assigned_driver_id) addOrderEvent(oid,'driver_assigned',driver?'Driver assigned':'Driver unassigned',{driver_id:driver},{created_by_role:'admin',visible_to_customer:true});
       if(oldStatus!==status) addOrderEvent(oid,'status',`Status changed to ${status}`,{from:oldStatus,to:status},{created_by_role:'admin',visible_to_customer:true});
       if(driver!==o.assigned_driver_id){
@@ -1378,7 +1420,11 @@ const server=http.createServer(async(req,res)=>{
       const s=requireDriver(req,res); if(!s)return;
       const driver=one('SELECT * FROM drivers WHERE id=?',s.driver_id); if(!driver)return send(res,401,{error:'Driver unavailable'});
       if(url.pathname==='/api/driver/bootstrap'&&req.method==='GET'){
-        return send(res,200,{driver,territory:one('SELECT * FROM territories WHERE id=?',driver.territory_id),products:all(`SELECT p.id,p.brand,p.flavor,p.strength,tp.inventory,tp.listed FROM products p JOIN territory_products tp ON tp.product_id=p.id WHERE tp.territory_id=? AND p.active=1 AND p.archived=0 ORDER BY p.brand,p.flavor`,driver.territory_id),orders:all(`SELECT o.*,(SELECT COALESCE(SUM(qty),0) FROM order_items i WHERE i.order_id=o.id) cans FROM orders o WHERE o.assigned_driver_id=? AND o.status NOT IN ('cancelled','completed') ORDER BY CASE WHEN o.status IN ('new','assigned') THEN 0 WHEN o.status='acknowledged' THEN 1 WHEN o.status='picked_up' THEN 2 WHEN o.status='on_the_way' THEN 3 ELSE 4 END,o.created_at DESC LIMIT 150`,driver.id)});
+        const recentCutoff=new Date(Date.now()-12*60*60*1000).toISOString(),archiveCutoff=new Date(Date.now()-15*24*60*60*1000).toISOString();
+        const selectOrder=`SELECT o.*,(SELECT COALESCE(SUM(qty),0) FROM order_items i WHERE i.order_id=o.id) cans FROM orders o`;
+        const orders=all(`${selectOrder} WHERE o.assigned_driver_id=? AND o.driver_archived_at IS NULL AND (o.status NOT IN ('cancelled','completed') OR (o.status='completed' AND COALESCE(o.driver_restored_at,o.completed_at)>=?) OR (o.status='cancelled' AND COALESCE(o.driver_restored_at,o.cancelled_at)>=?)) ORDER BY CASE WHEN o.status IN ('new','assigned') THEN 0 WHEN o.status='acknowledged' THEN 1 WHEN o.status='picked_up' THEN 2 WHEN o.status='on_the_way' THEN 3 ELSE 4 END,o.created_at DESC LIMIT 150`,driver.id,recentCutoff,recentCutoff);
+        const archived_orders=all(`${selectOrder} WHERE o.assigned_driver_id=? AND o.driver_archived_at IS NOT NULL AND o.driver_archived_at>=? ORDER BY o.driver_archived_at DESC LIMIT 150`,driver.id,archiveCutoff);
+        return send(res,200,{driver,territory:one('SELECT * FROM territories WHERE id=?',driver.territory_id),products:all(`SELECT p.id,p.brand,p.flavor,p.strength,tp.inventory,tp.listed FROM products p JOIN territory_products tp ON tp.product_id=p.id WHERE tp.territory_id=? AND p.active=1 AND p.archived=0 ORDER BY p.brand,p.flavor`,driver.territory_id),orders,archived_orders,history_policy:{terminal_hours:12,archive_days:15}});
       }
       if(url.pathname==='/api/driver/push-config'&&req.method==='GET'){
         return send(res,200,{
@@ -1411,7 +1457,7 @@ const server=http.createServer(async(req,res)=>{
           await sendDriverPush(driver.id,o.id);
         }else{
           const subs=all('SELECT * FROM push_subscriptions WHERE driver_id=?',driver.id);
-          const payload=JSON.stringify({title:'Pouches Vic notifications are ON',body:'New orders will alert this phone.',url:'/driver'});
+          const payload=JSON.stringify({title:'PouchesVic test alert',body:'Notifications are working.',url:'/driver'});
           for(const row of subs){
             const sub=safeJson(row.subscription_json,null);
             if(sub)await webpush.sendNotification(sub,payload,{TTL:300,urgency:'high'});
@@ -1427,7 +1473,19 @@ const server=http.createServer(async(req,res)=>{
       if(dord&&req.method==='GET'){ const o=orderFull(decodeURIComponent(dord[1]));if(!o||o.assigned_driver_id!==driver.id)return send(res,404,{error:'Not found'});return send(res,200,o); }
       if(dord&&req.method==='PUT'){
         const oid=decodeURIComponent(dord[1]),o=one('SELECT * FROM orders WHERE id=?',oid);if(!o||o.assigned_driver_id!==driver.id)return send(res,404,{error:'Not found'}); const b=await bodyJson(req);
-        if(text(b.status)==='cancelled')return send(res,200,cancelOrder(oid,{role:'driver',driver_id:driver.id,note:text(b.note)}));
+        const action=text(b.action);
+        if(action==='archive'){
+          const t=now();run('UPDATE orders SET driver_archived_at=?,driver_restored_at=NULL,updated_at=? WHERE id=?',t,t,oid);addOrderEvent(oid,'driver_archive','Driver moved order to Archive / Trash',{}, {created_by_role:'driver',created_by_driver_id:driver.id});return send(res,200,orderFull(oid));
+        }
+        if(action==='restore'){
+          if(!o.driver_archived_at)throw new Error('Order is not archived');
+          if(new Date(o.driver_archived_at).getTime()<Date.now()-15*24*60*60*1000)throw new Error('This archived order is past the 15-day restore window');
+          const t=now();run('UPDATE orders SET driver_archived_at=NULL,driver_restored_at=?,updated_at=? WHERE id=?',t,t,oid);addOrderEvent(oid,'driver_restore','Driver restored order from Archive / Trash',{}, {created_by_role:'driver',created_by_driver_id:driver.id});return send(res,200,orderFull(oid));
+        }
+        if(text(b.status)==='cancelled'){
+          if(['completed','cancelled'].includes(o.status))throw new Error('Completed or already-cancelled orders cannot be cancelled by the driver');
+          return send(res,200,cancelOrder(oid,{role:'driver',driver_id:driver.id,note:text(b.note)||'Driver cancelled order'}));
+        }
         const status=text(b.status)||o.status;if(!['acknowledged','picked_up','on_the_way','completed'].includes(status))throw new Error('Invalid driver order status'); const completed=status==='completed'?(o.completed_at||now()):o.completed_at;
         run('UPDATE orders SET status=?,completed_at=?,updated_at=? WHERE id=?',status,completed,now(),oid);
         addOrderEvent(oid,'driver_update',text(b.note)||`Driver changed status to ${status}`,{status},{attention:!['completed','acknowledged'].includes(status),created_by_role:'driver',created_by_driver_id:driver.id,visible_to_customer:true});

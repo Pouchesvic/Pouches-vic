@@ -108,7 +108,7 @@
           banner.innerHTML = `<b>⚠ ORDER UPDATED</b><div style="margin-top:5px">Customer support changed this order at ${E(new Date(o.support_updated_at).toLocaleString())}. The address and delivery notes shown below are the current version.</div>`;
           const h = document.querySelector('#detail h2'); if (h) h.insertAdjacentElement('afterend', banner);
         }
-        const buttons = document.querySelector('#detail .two:last-child');
+        const buttons = document.getElementById('driverStatusActions');
         if (buttons && !document.getElementById('pvOptionalStatus')) {
           const note = document.createElement('div'); note.id='pvOptionalStatus'; note.className='muted'; note.style.marginTop='8px';
           note.textContent='“ON THE WAY” is optional. You can mark the order completed without using it.';

@@ -6,12 +6,12 @@
 <title>Pouches Vic</title>
 <style>
 *{box-sizing:border-box}
-:root{--bg:#f2f2ef;--ink:#111;--muted:#6d6d6d;--line:#dededb;--card:#fff}
+:root{--bg:#f2f2ef;--ink:#111;--muted:#4f4f4f;--line:#dededb;--card:#fff}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:Arial,Helvetica,sans-serif}
 button,input,select,textarea{font:inherit}
 button{touch-action:manipulation}
 .wrap{max-width:680px;margin:auto;padding:16px}
-.top{background:#111;color:#fff;text-align:center;padding:9px;font-size:11px;font-weight:900;letter-spacing:.2px}
+.top{background:#111;color:#fff;text-align:center;padding:9px;font-size:12px;font-weight:900;letter-spacing:.2px}
 .card{background:var(--card);border-radius:22px;padding:20px;margin-bottom:14px}
 .head{display:flex;align-items:center;justify-content:space-between;gap:14px}
 .logo{font-size:25px;font-weight:1000}
@@ -20,10 +20,10 @@ button{touch-action:manipulation}
 .hero h1{font-size:32px;line-height:1.02;margin:8px 0}
 .hero p{line-height:1.5}
 .serviceInfo{background:#111;color:#fff;border-radius:18px;padding:17px 18px;margin:12px 0 16px;text-align:center}
-.serviceInfo .hoursLabel{font-size:10px;font-weight:900;letter-spacing:.12em;opacity:.65}
+.serviceInfo .hoursLabel{font-size:11px;font-weight:900;letter-spacing:.12em;opacity:.82}
 .serviceInfo .hoursValue{font-size:20px;font-weight:1000;margin:4px 0 13px}
 .serviceInfo .sameDay{font-size:18px;font-weight:1000;letter-spacing:.04em}
-.serviceInfo .payNote{font-size:12px;opacity:.72;margin-top:5px}
+.serviceInfo .payNote{font-size:13px;opacity:.88;margin-top:5px}
 .btn{width:100%;border:0;border-radius:12px;background:#111;color:#fff;padding:15px;font-weight:900;cursor:pointer}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .territory{font-size:13px;font-weight:900;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:#fff;min-width:138px}
@@ -37,12 +37,12 @@ button{touch-action:manipulation}
 .thumb{width:82px;height:82px;background:#f3f3f1;border-radius:14px;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:10px;font-weight:900;text-align:center}
 .thumb img{width:100%;height:100%;object-fit:cover}
 .pname{font-size:17px;font-weight:1000;text-transform:uppercase;line-height:1.05}
-.pmeta{font-size:12px;color:#666;margin-top:4px}
+.pmeta{font-size:13px;color:var(--muted);margin-top:4px}
 .price-stock{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px}
 .price{font-size:17px;font-weight:1000}
 
 .qty-wrap{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:10px}
-.qty-label{font-size:10px;font-weight:900;color:#666;margin-right:auto}
+.qty-label{font-size:11px;font-weight:900;color:#4f4f4f;margin-right:auto}
 .stepper{display:grid;grid-template-columns:42px 58px 42px;align-items:center;border:1px solid #d6d6d3;border-radius:12px;overflow:hidden;background:#f8f8f6}
 .stepper button{height:42px;border:0;background:#111;color:#fff;font-size:24px;line-height:1;font-weight:700}
 .stepper button:disabled{background:#d7d7d4;color:#888}
@@ -52,25 +52,25 @@ button{touch-action:manipulation}
 .cartbar{position:sticky;bottom:10px;display:none;background:#111;color:#fff;border-radius:15px;padding:12px 14px;margin-top:18px;box-shadow:0 8px 25px #0003;z-index:5}
 .cartbar.show{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .cartbar button{border:0;background:#fff;border-radius:10px;font-weight:900;padding:10px 12px;white-space:nowrap}
-.cart-small{font-size:11px;color:#ddd;margin-top:2px}
+.cart-small{font-size:12px;color:#eee;margin-top:2px}
 .sheet{display:none;position:fixed;inset:0;background:#0008;z-index:30;align-items:flex-end}
 .sheet.open{display:flex}
 .sheetbox{background:#fff;width:100%;max-height:92vh;overflow:auto;border-radius:22px 22px 0 0;padding:20px;padding-bottom:calc(20px + env(safe-area-inset-bottom))}
 .close{float:right;border:0;background:#eee;border-radius:10px;padding:8px 11px;font-size:18px}
 .checkout-title{margin:2px 0 14px}
 .checkout-items{border:1px solid #e4e4e1;border-radius:15px;padding:4px 12px;margin-bottom:12px}
-.checkout-item{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #eee}
+.checkout-item{display:grid;grid-template-columns:1fr;gap:10px;padding:13px 0;border-bottom:1px solid #ddd}
 .checkout-item:last-child{border-bottom:0}
+.checkout-product{display:grid;gap:4px}.checkout-product-name{font-size:17px;font-weight:900}.checkout-product-meta{font-size:13px;color:#3f3f3f;line-height:1.4}.checkout-product-total{display:flex;justify-content:space-between;gap:12px;font-size:14px;margin-top:3px}.checkout-item .stepper{justify-self:start}
 .checkout-item .stepper{grid-template-columns:36px 46px 36px}
 .checkout-item .stepper button,.checkout-item .stepper input{height:36px}
 .checkout-item .stepper input{width:46px;font-size:15px}
-.small{font-size:11px;color:#666}
-.notice{background:#f6f6f4;border-radius:12px;padding:11px;font-size:12px;line-height:1.4;margin:10px 0}
-.area-warning{background:#fff4cf;border:1px solid #e0bd49;border-radius:12px;padding:11px;font-size:12px;line-height:1.45;margin:10px 0}
-.field-error{color:#9d1c1c;font-size:12px;font-weight:800;margin-top:5px}
+.small{font-size:13px;color:#4f4f4f}
+.notice{background:#f6f6f4;border-radius:12px;padding:12px;font-size:13px;line-height:1.45;margin:10px 0}
+.field-error{color:#9d1c1c;font-size:13px;font-weight:800;margin-top:5px}
 .invalid{border-color:#b52121!important;box-shadow:0 0 0 2px #b5212120}
 .field{margin:11px 0}
-.field label{display:block;font-size:11px;font-weight:900;margin-bottom:5px}
+.field label{display:block;font-size:12px;font-weight:900;margin-bottom:5px}
 .field input,.field select,.field textarea{width:100%;border:1px solid #d7d7d4;border-radius:12px;padding:12px;font-size:16px;background:#fff;color:#111}
 .field textarea{min-height:92px;resize:vertical}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -81,6 +81,7 @@ button{touch-action:manipulation}
 .summary{background:#111;color:#fff;border-radius:14px;padding:14px;margin:14px 0}
 .summary-line{display:flex;justify-content:space-between;gap:12px;margin:5px 0}
 .summary-line.total{font-size:18px;font-weight:900;border-top:1px solid #ffffff33;padding-top:9px;margin-top:9px}
+.summary-saving{color:#b8f1c7;font-size:13px;font-weight:900;margin-top:10px}
 details.notice summary{font-weight:900;cursor:pointer}
 .success{text-align:center;padding:28px 10px}
 .success h2{font-size:28px;margin-bottom:8px}
@@ -94,9 +95,9 @@ details.notice summary{font-weight:900;cursor:pointer}
 .hr{height:1px;background:#ddd;margin:8px 0}
 .order-meta{text-align:left;line-height:1.45}
 .order-page{max-width:680px;margin:auto;padding:16px}
-.status-chip{display:inline-block;background:#fff1a8;border-radius:999px;padding:7px 10px;font-size:11px;font-weight:900}
+.status-chip{display:inline-block;background:#fff1a8;border-radius:999px;padding:7px 10px;font-size:12px;font-weight:900}
 .ghost{background:#e9e9e9;color:#111}
-.footer{text-align:center;color:#777;font-size:11px;padding:20px 0 30px}
+.footer{text-align:center;color:#4f4f4f;font-size:13px;padding:20px 0 30px}
 @media(max-width:460px){.form-grid{grid-template-columns:1fr}.logo{font-size:22px}.territory{min-width:125px}.product-row{grid-template-columns:74px 1fr}.thumb{width:74px;height:74px}}
 </style>
 </head>
@@ -128,6 +129,7 @@ const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const centsMoney=c=>new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format((Number(c)||0)/100);
 const toCents=v=>Math.round((Number(v)||0)*100);
+function displayStrength(value){const s=String(value??'').trim();if(!s)return '';if(/mg\s*$/i.test(s))return s.replace(/\s*mg\s*$/i,' mg');return /^\d+(?:\.\d+)?$/.test(s)?s+' mg':s;}
 function tierCents(t){return Number(t?.unit_price_cents ?? toCents(t?.unit_price));}
 function zoneFeeCents(z){return Number(z?.fee_cents ?? toCents(z?.fee));}
 function overrideCents(p){if(p?.local_price_override_cents!=null)return Number(p.local_price_override_cents);if(p?.local_price_override!=null)return toCents(p.local_price_override);return null;}
@@ -179,7 +181,7 @@ function renderProducts(){
       <div class="thumb">${p.image?`<img src="${esc(p.image)}" alt="">`:'PRODUCT PHOTO'}</div>
       <div>
         <div class="pname">${esc(p.flavor)}</div>
-        <div class="pmeta">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''}</div>
+        <div class="pmeta">${esc(p.brand)}${p.strength?' • '+esc(displayStrength(p.strength)):''}</div>
         <div class="price-stock"><span class="price">${centsMoney(base)}</span></div>
         <div class="qty-wrap"><span class="qty-label">QUANTITY</span>${stepperHtml(p.id,q,max)}</div>
       </div>
@@ -200,39 +202,35 @@ function paymentLabel(method){if(method==='cash')return 'Cash on delivery';if(me
 function validEmail(value){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value||'').trim());}
 function openCart(){
   if(!cartQty())return;
-  $('checkout').innerHTML=`<h2 class="checkout-title">Review Order</h2><div id="checkoutItems" class="checkout-items"></div><div class="notice">${(data.tiers||[]).map(x=>`${x.min_qty}${x.max_qty?'–'+x.max_qty:'+'}: ${centsMoney(tierCents(x))} each`).join(' • ')}</div>
-    <div class="field"><label>DELIVERY AREA</label><select id="zone"><option value="">Choose your delivery area</option>${(data.zones||[]).map(z=>`<option value="${z.id}">${esc(z.name)} — ${centsMoney(zoneFeeCents(z))}${z.free_at_qty?' (free at '+z.free_at_qty+'+)':''}${z.description?' • '+esc(z.description):''}</option>`).join('')}</select></div>
+  $('checkout').innerHTML=`<h2 class="checkout-title">Review Order</h2><div id="checkoutItems" class="checkout-items"></div><div class="notice"><b>PRICE PER CAN</b><br>${(data.tiers||[]).map(x=>`${x.min_qty}${x.max_qty?'–'+x.max_qty:'+'} cans: ${centsMoney(tierCents(x))} each`).join('<br>')}</div>
+    <input id="zone" type="hidden" value="">
     <div class="form-grid"><div class="field"><label>NAME</label><input id="customerName" autocomplete="name"></div><div class="field"><label>PHONE</label><input id="customerPhone" inputmode="tel" autocomplete="tel"></div></div>
     <div class="field"><label>EMAIL <span class="small">(optional — for confirmation and receipt)</span></label><input id="customerEmail" type="email" inputmode="email" autocomplete="email" aria-describedby="emailError"><div id="emailError" class="field-error" role="alert"></div></div>
-    <div class="field"><label>ADDRESS</label><input id="customerAddress" autocomplete="street-address" placeholder="Street address, city"></div>
-    <div id="areaHint" class="area-warning">Choose the delivery area that contains your address. The fee or delivery timing may be corrected if the wrong area is selected.</div>
+    <div class="field"><label>DELIVERY ADDRESS</label><input id="customerAddress" autocomplete="street-address" placeholder="Start typing your street address"></div>
     <div class="field"><label>DELIVERY NOTES <span class="small">(optional)</span></label><textarea id="deliveryNotes"></textarea></div>
     <div class="field"><label>PAYMENT</label><select id="paymentMethod">${paymentOptions()}</select></div><div class="field"><label>PAYMENT NOTE <span class="small">(optional)</span></label><input id="paymentNote"></div>
-    <details class="notice"><summary>Delivery area guide</summary><div style="margin-top:8px">${(data.zones||[]).map(z=>`<b>${esc(z.name)}:</b> ${esc(z.rule_notes||z.description||'')}<br>`).join('')}</div></details>
     <label class="checkrow"><input id="ageAck" type="checkbox"><span>${esc(data.settings?.age_acknowledgement_text||'I confirm that I meet the legal age requirement for this purchase.')}</span></label>
     <div id="orderSummary" class="summary"></div><button id="submitBtn" class="btn" onclick="submitOrder()">PLACE ORDER</button>`;
-  $('zone').onchange=()=>{renderAreaWarning();renderOrderSummary()};$('customerAddress').addEventListener('input',suggestDeliveryArea);$('customerEmail').addEventListener('blur',validateEmailField);renderCheckoutItems();renderAreaWarning();renderOrderSummary();$('sheet').classList.add('open');
+  $('zone').onchange=renderOrderSummary;$('customerEmail').addEventListener('blur',validateEmailField);renderCheckoutItems();renderOrderSummary();$('sheet').classList.add('open');
 }
-function renderAreaWarning(message=''){const box=$('areaHint');if(!box)return;const z=data.zones.find(x=>x.id===$('zone')?.value);box.innerHTML=message?esc(message):z?`<b>Confirm ${esc(z.name)} is correct.</b>${z.rule_notes||z.description?` ${esc(z.rule_notes||z.description)}`:''} The final fee may be corrected if the address is outside this area.`:'Choose the delivery area that contains your address. The fee or delivery timing may be corrected if the wrong area is selected.';}
-function suggestDeliveryArea(){const v=$('customerAddress').value.toLowerCase(),zones=data.zones||[];let wanted='';if(/langford|colwood|west ?shore/.test(v))wanted='orange';if(wanted){const z=zones.find(x=>String(x.name).toLowerCase()===wanted);if(z&&$('zone').value!==z.id){$('zone').value=z.id;renderAreaWarning(`Suggested delivery area: ${z.name}. Please verify this suggestion before ordering.`);renderOrderSummary();}}else renderAreaWarning();}
 function validateEmailField(){const input=$('customerEmail'),error=$('emailError');if(!input||!error)return true;const value=input.value.trim(),ok=!value||validEmail(value);input.classList.toggle('invalid',!ok);error.textContent=ok?'':'Enter a valid email address or leave this field blank.';return ok;}
-function renderCheckoutItems(){const box=$('checkoutItems');if(!box)return;const entries=Object.entries(cart).filter(([,q])=>q>0);if(!entries.length){closeCart();return;}box.innerHTML=entries.map(([pid,q])=>{const p=productById(pid);if(!p)return '';return `<div class="checkout-item"><div><b>${esc(p.flavor)}</b><div class="small">${esc(p.brand)}${p.strength?' • '+esc(p.strength):''}</div></div>${stepperHtml(pid,q,p.inventory)}</div>`;}).join('');renderOrderSummary();}
-function currentQuote(){const q=cartQty(),subtotal=cartSubtotalCents();let delivery=0;const z=$('zone')?data.zones.find(x=>x.id===$('zone').value):null;if(z){delivery=zoneFeeCents(z);if(z.free_at_qty!=null&&q>=Number(z.free_at_qty))delivery=0;}const pre=subtotal+delivery,step=Math.max(1,Number(data.settings?.round_down_to_cents)||500),total=Math.floor(pre/step)*step,discount=Math.max(0,pre-total);return {q,subtotal,delivery,pre,total,discount,z};}
-function renderOrderSummary(){const box=$('orderSummary');if(!box)return;const x=currentQuote(),label=data.settings?.customer_discount_label||'Customer Appreciation';box.innerHTML=`<div class="summary-line"><span>Products (${x.q} can${x.q===1?'':'s'})</span><b>${centsMoney(x.subtotal)}</b></div><div class="summary-line"><span>Delivery</span><b>${x.z?centsMoney(x.delivery):'Choose area'}</b></div>${x.discount>0?`<div class="summary-line"><span>${esc(label)}</span><b>−${centsMoney(x.discount)}</b></div>`:''}<div class="summary-line total"><span>TOTAL</span><span>${x.z?centsMoney(x.total):'—'}</span></div>`;}
+function renderCheckoutItems(){const box=$('checkoutItems');if(!box)return;const entries=Object.entries(cart).filter(([,q])=>q>0),orderQty=cartQty();if(!entries.length){closeCart();return;}box.innerHTML=entries.map(([pid,q])=>{const p=productById(pid);if(!p)return '';const line=unitPriceCents(orderQty,p)*q;return `<div class="checkout-item"><div class="checkout-product"><div class="checkout-product-name">${esc(p.flavor)}</div><div class="checkout-product-meta"><b>Brand:</b> ${esc(p.brand)}<br><b>Strength:</b> ${esc(displayStrength(p.strength)||'Not specified')}<br><b>Quantity:</b> ${q}</div><div class="checkout-product-total"><span>${centsMoney(unitPriceCents(orderQty,p))} each</span><b>Line total: ${centsMoney(line)}</b></div></div>${stepperHtml(pid,q,p.inventory)}</div>`;}).join('');renderOrderSummary();}
+function currentQuote(){const q=cartQty(),subtotal=cartSubtotalCents(),z=$('zone')?data.zones.find(x=>x.id===$('zone').value):null,normalDelivery=z?zoneFeeCents(z):0;let delivery=normalDelivery,deliveryReason='';if(z&&String(z.name).toLowerCase()==='green'&&q>=10){delivery=0;deliveryReason='10+ Can Delivery Reward';}const deliverySavings=Math.max(0,normalDelivery-delivery),pre=subtotal+delivery,step=Math.max(1,Number(data.settings?.round_down_to_cents)||500),total=Math.floor(pre/step)*step,discount=Math.max(0,pre-total);return {q,subtotal,normalDelivery,delivery,deliverySavings,deliveryReason,pre,total,discount,z};}
+function renderOrderSummary(){const box=$('orderSummary');if(!box)return;const x=currentQuote(),label=data.settings?.customer_discount_label||'Customer Appreciation';box.innerHTML=`<div class="summary-line"><span>Products (${x.q} can${x.q===1?'':'s'})</span><b>${centsMoney(x.subtotal)}</b></div>${x.z?`<div class="summary-line"><span>${esc(x.z.name)} Delivery</span><b>${centsMoney(x.normalDelivery)}</b></div>${x.deliverySavings>0?`<div class="summary-line"><span>${esc(x.deliveryReason||'Delivery discount')}</span><b>−${centsMoney(x.deliverySavings)}</b></div><div class="summary-line"><span>Delivery</span><b>${x.delivery===0?'FREE':centsMoney(x.delivery)}</b></div>`:''}`:`<div class="summary-line"><span>Delivery</span><b>Select an address</b></div>`}${x.discount>0?`<div class="summary-line"><span>${esc(label)}</span><b>−${centsMoney(x.discount)}</b></div>`:''}<div class="summary-line total"><span>TOTAL</span><span>${x.z?centsMoney(x.total):'—'}</span></div>${x.deliverySavings>0?`<div class="summary-saving">You saved ${centsMoney(x.deliverySavings)} on delivery.</div>`:''}`;}
 function closeCart(){$('sheet').classList.remove('open');}
 async function submitOrder(){
   const entries=Object.entries(cart).filter(([,q])=>q>0),items=entries.map(([product_id,qty])=>({product_id,qty}));if(!items.length)return alert('Please choose at least one product.');
   const customer_name=$('customerName').value.trim(),customer_phone=$('customerPhone').value.trim(),customer_email=$('customerEmail').value.trim(),address=$('customerAddress').value.trim(),delivery_notes=$('deliveryNotes').value.trim(),payment_method=$('paymentMethod')?.value||'',payment_note=$('paymentNote').value.trim(),zone_id=$('zone').value;
-  if(!customer_name||!customer_phone||!address)return alert('Please add name, phone and address.');if(!validateEmailField())return $('customerEmail').focus();if(!zone_id)return alert('Please choose and confirm your delivery area.');if(!$('ageAck').checked)return alert('Please confirm the age requirement.');if(!payment_method)return alert('No payment method is currently available.');
+  const minimum=Math.max(1,Number(data.settings?.minimum_order_qty)||5);if(cartQty()<minimum)return alert(`Minimum order is ${minimum} cans.`);if(!customer_name||!customer_phone||!address)return alert('Please add name, phone and address.');if(!validateEmailField())return $('customerEmail').focus();if(!zone_id)return alert('Select a suggested address so delivery can be confirmed.');if(!$('ageAck').checked)return alert('Please confirm the age and ID requirement.');if(!payment_method)return alert('No payment method is currently available.');
   const orderQty=cartQty(),snapshot=entries.map(([pid,qty])=>{const p=productById(pid);return {qty,brand:p?.brand||'',flavor:p?.flavor||'',strength:p?.strength||'',line_total_cents:unitPriceCents(orderQty,p)*qty}}),zone=data.zones.find(z=>z.id===zone_id);
   const b={territory_slug:currentSlug,items,zone_id,customer_name,customer_phone,customer_email,address,delivery_notes,payment_method,payment_note,age_acknowledged:true};const btn=$('submitBtn');btn.disabled=true;btn.textContent='PLACING ORDER…';
   try{const r=await fetch('/api/public/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});const j=await r.json();if(!r.ok){btn.disabled=false;btn.textContent='PLACE ORDER';if(String(j.error||'').toLowerCase().includes('available'))await load();return alert(j.error||'Could not submit order');}
-    const label=data.settings?.customer_discount_label||'Customer Appreciation',itemHtml=snapshot.map(x=>`<div class="receipt-line"><span>${x.qty} × ${esc(x.brand)} ${esc(x.flavor)}${x.strength?' • '+esc(x.strength):''}</span><b>${centsMoney(x.line_total_cents)}</b></div>`).join('');cart={};updateCart();await load();
+    const label=data.settings?.customer_discount_label||'Customer Appreciation',itemHtml=snapshot.map(x=>`<div class="receipt-line"><span>${x.qty} × ${esc(x.brand)} ${esc(x.flavor)}${x.strength?' • '+esc(displayStrength(x.strength)):''}</span><b>${centsMoney(x.line_total_cents)}</b></div>`).join('');cart={};updateCart();await load();
     const emailMessage=!customer_email?'':j.confirmation_email_status==='sent'?`<br><br>Confirmation emailed to ${esc(customer_email)}.`:`<br><br>Your order is confirmed. Email delivery is currently unavailable, so please save the live order link below.`;
-    $('checkout').innerHTML=`<div class="success"><div class="confirm-check">✓</div><div class="confirm-title">ORDER CONFIRMED</div><div class="small">Order #${j.order_no}</div><div class="receipt">${itemHtml}<div class="hr"></div><div class="receipt-line"><span>Products</span><b>${centsMoney(j.subtotal_cents)}</b></div><div class="receipt-line"><span>Delivery${j.zone_name?' • '+esc(j.zone_name):''}</span><b>${centsMoney(j.delivery_fee_cents)}</b></div>${j.customer_discount_cents>0?`<div class="receipt-line"><span>${esc(label)}</span><b>−${centsMoney(j.customer_discount_cents)}</b></div>`:''}<div class="receipt-line total"><span>TOTAL</span><span>${centsMoney(j.total_cents)}</span></div></div><div class="order-meta"><b>Deliver to</b><br>${esc(address)}${delivery_notes?`<br><br><b>Delivery notes</b><br>${esc(delivery_notes)}`:''}<br><br><b>Payment</b><br>${esc(paymentLabel(payment_method))}${emailMessage}</div>${j.status_url?`<p><a class="btn" style="display:block;text-decoration:none" href="${esc(j.status_url)}">VIEW MY ORDER</a></p>`:''}<button class="btn ghost" style="margin-top:8px" onclick="closeCart()">DONE</button></div>`;
+    $('checkout').innerHTML=`<div class="success"><div class="confirm-check">✓</div><div class="confirm-title">ORDER CONFIRMED</div><div class="small">Order #${j.order_no}</div><div class="receipt">${itemHtml}<div class="hr"></div><div class="receipt-line"><span>Products</span><b>${centsMoney(j.subtotal_cents)}</b></div><div class="receipt-line"><span>${esc(j.zone_name||'Delivery')} Delivery</span><b>${centsMoney(j.normal_delivery_fee_cents??j.delivery_fee_cents)}</b></div>${j.delivery_savings_cents>0?`<div class="receipt-line"><span>${esc(j.delivery_discount_reason||'Delivery discount')}</span><b>−${centsMoney(j.delivery_savings_cents)}</b></div><div class="receipt-line"><span>Delivery</span><b>${Number(j.delivery_fee_cents)===0?'FREE':centsMoney(j.delivery_fee_cents)}</b></div>`:''}${j.customer_discount_cents>0?`<div class="receipt-line"><span>${esc(label)}</span><b>−${centsMoney(j.customer_discount_cents)}</b></div>`:''}<div class="receipt-line total"><span>TOTAL</span><span>${centsMoney(j.total_cents)}</span></div>${j.delivery_savings_cents>0?`<div style="padding-top:10px;color:#146b2f;font-weight:900">You saved ${centsMoney(j.delivery_savings_cents)} on delivery.</div>`:''}</div><div class="order-meta"><b>Deliver to</b><br>${esc(address)}${delivery_notes?`<br><br><b>Delivery notes</b><br>${esc(delivery_notes)}`:''}<br><br><b>Payment</b><br>${esc(paymentLabel(payment_method))}${emailMessage}</div>${j.status_url?`<p><a class="btn" style="display:block;text-decoration:none" href="${esc(j.status_url)}">VIEW MY ORDER</a></p>`:''}<button class="btn ghost" style="margin-top:8px" onclick="closeCart()">DONE</button></div>`;
   }catch(e){btn.disabled=false;btn.textContent='PLACE ORDER';alert('Could not submit order. Please try again.');}
 }
-async function renderOrderPage(token){try{const r=await fetch('/api/public/orders/token/'+encodeURIComponent(token),{cache:'no-store'}),o=await r.json();if(!r.ok)throw Error(o.error||'Order not found');const label='Customer Appreciation';document.body.innerHTML=`<div class="order-page"><div class="card"><div class="small">POUCHES VIC</div><h1 style="margin:6px 0">Order #${o.order_no}</h1><span class="status-chip">${esc(String(o.status||'').replaceAll('_',' ').toUpperCase())}</span></div><div class="card"><div class="order-meta"><b>${esc(o.customer_name)}</b><br>${esc(o.address)}${o.delivery_notes?`<br><br><b>Delivery notes</b><br>${esc(o.delivery_notes)}`:''}</div><div class="receipt">${o.items.map(i=>`<div class="receipt-line"><span>${i.qty} × ${esc(i.brand_snapshot)} ${esc(i.product_name_snapshot)}${i.strength_snapshot?' • '+esc(i.strength_snapshot):''}</span><b>${centsMoney(i.line_total_cents)}</b></div>`).join('')}<div class="hr"></div><div class="receipt-line"><span>Products</span><b>${centsMoney(o.subtotal_cents)}</b></div><div class="receipt-line"><span>Delivery${o.zone_name_snapshot?' • '+esc(o.zone_name_snapshot):''}</span><b>${centsMoney(o.delivery_fee_cents)}</b></div>${o.customer_discount_cents>0?`<div class="receipt-line"><span>${label}</span><b>−${centsMoney(o.customer_discount_cents)}</b></div>`:''}<div class="receipt-line total"><span>TOTAL</span><span>${centsMoney(o.total_cents)}</span></div></div><div class="order-meta"><b>Payment</b><br>${esc(paymentLabel(o.payment_method))}</div>${o.driver_name?`<p><b>Driver:</b> ${esc(o.driver_name)}</p>`:''}${o.text_driver_href?`<a class="btn" style="display:block;text-decoration:none;text-align:center" href="${esc(o.text_driver_href)}">TEXT YOUR DRIVER</a>`:''}</div><a class="btn ghost" style="display:block;text-decoration:none;text-align:center" href="/">BACK TO POUCHES VIC</a></div>`;}catch(e){document.body.innerHTML=`<div class="order-page"><div class="card"><h2>Order not found</h2><p>We couldn't load that order.</p><a class="btn" href="/">BACK TO POUCHES VIC</a></div></div>`;}}
+async function renderOrderPage(token){try{const r=await fetch('/api/public/orders/token/'+encodeURIComponent(token),{cache:'no-store'}),o=await r.json();if(!r.ok)throw Error(o.error||'Order not found');const label='Customer Appreciation';document.body.innerHTML=`<div class="order-page"><div class="card"><div class="small">POUCHES VIC</div><h1 style="margin:6px 0">Order #${o.order_no}</h1><span class="status-chip">${esc(String(o.status||'').replaceAll('_',' ').toUpperCase())}</span></div><div class="card"><div class="order-meta"><b>${esc(o.customer_name)}</b><br>${esc(o.address)}${o.delivery_notes?`<br><br><b>Delivery notes</b><br>${esc(o.delivery_notes)}`:''}</div><div class="receipt">${o.items.map(i=>`<div class="receipt-line"><span>${i.qty} × ${esc(i.brand_snapshot)} ${esc(i.product_name_snapshot)}${i.strength_snapshot?' • '+esc(displayStrength(i.strength_snapshot)):''}</span><b>${centsMoney(i.line_total_cents)}</b></div>`).join('')}<div class="hr"></div><div class="receipt-line"><span>Products</span><b>${centsMoney(o.subtotal_cents)}</b></div><div class="receipt-line"><span>${esc(o.zone_name_snapshot||'Delivery')} Delivery</span><b>${centsMoney(o.normal_delivery_fee_cents??o.delivery_fee_cents)}</b></div>${o.delivery_savings_cents>0?`<div class="receipt-line"><span>${esc(o.delivery_discount_reason||'Delivery discount')}</span><b>−${centsMoney(o.delivery_savings_cents)}</b></div><div class="receipt-line"><span>Delivery</span><b>${Number(o.delivery_fee_cents)===0?'FREE':centsMoney(o.delivery_fee_cents)}</b></div>`:''}${o.customer_discount_cents>0?`<div class="receipt-line"><span>${label}</span><b>−${centsMoney(o.customer_discount_cents)}</b></div>`:''}<div class="receipt-line total"><span>TOTAL</span><span>${centsMoney(o.total_cents)}</span></div>${o.delivery_savings_cents>0?`<div style="padding-top:10px;color:#146b2f;font-weight:900">You saved ${centsMoney(o.delivery_savings_cents)} on delivery.</div>`:''}</div><div class="order-meta"><b>Payment</b><br>${esc(paymentLabel(o.payment_method))}</div>${o.driver_name?`<p><b>Driver:</b> ${esc(o.driver_name)}</p>`:''}${o.text_driver_href?`<a class="btn" style="display:block;text-decoration:none;text-align:center" href="${esc(o.text_driver_href)}">TEXT YOUR DRIVER</a>`:''}</div><a class="btn ghost" style="display:block;text-decoration:none;text-align:center" href="/">BACK TO POUCHES VIC</a></div>`;}catch(e){document.body.innerHTML=`<div class="order-page"><div class="card"><h2>Order not found</h2><p>We couldn't load that order.</p><a class="btn" href="/">BACK TO POUCHES VIC</a></div></div>`;}}
 init().catch(()=>{$('products').innerHTML='<div class="empty">Could not load inventory. Please refresh.</div>';});
 </script>
 </body>

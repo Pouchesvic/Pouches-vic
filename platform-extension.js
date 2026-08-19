@@ -37,6 +37,12 @@ function safeJson(v, d = null) { try { return JSON.parse(v); } catch { return d;
 function hash(v) { return crypto.createHash('sha256').update(String(v)).digest('hex'); }
 function token(bytes = 32) { return crypto.randomBytes(bytes).toString('base64url'); }
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function displayStrength(value) {
+  const s = text(value);
+  if (!s) return '';
+  if (/mg\s*$/i.test(s)) return s.replace(/\s*mg\s*$/i, ' mg');
+  return /^\d+(?:\.\d+)?$/.test(s) ? `${s} mg` : s;
+}
 
 function openDb() {
   if (db) return db;
@@ -298,6 +304,7 @@ function ensurePlatform() {
       FOREIGN KEY(period_id) REFERENCES platform_settlement_periods(id) ON DELETE CASCADE
     );
   `);
+  ensureColumn('platform_customers','archived_at','TEXT');
 
   const t = now();
   if (!one("SELECT 1 FROM platform_businesses WHERE id='primary'")) {
@@ -827,9 +834,9 @@ function findCustomer(contact = {}) {
   const address = normalizeAddressKey(contact.address);
   const name = normalizeNameKey(contact.customer_name ?? contact.name);
   let c = null;
-  if (phone && phone.length >= 7) c = one('SELECT * FROM platform_customers WHERE normalized_phone=? ORDER BY admin_confirmed DESC,updated_at DESC LIMIT 1', phone);
-  if (!c && email) c = one('SELECT * FROM platform_customers WHERE normalized_email=? ORDER BY admin_confirmed DESC,updated_at DESC LIMIT 1', email);
-  if (!c && address && name) c = one('SELECT * FROM platform_customers WHERE normalized_address=? AND lower(display_name)=? ORDER BY admin_confirmed DESC,updated_at DESC LIMIT 1', address, text(contact.customer_name ?? contact.name).toLowerCase());
+  if (phone && phone.length >= 7) c = one('SELECT * FROM platform_customers WHERE archived_at IS NULL AND normalized_phone=? ORDER BY admin_confirmed DESC,updated_at DESC LIMIT 1', phone);
+  if (!c && email) c = one('SELECT * FROM platform_customers WHERE archived_at IS NULL AND normalized_email=? ORDER BY admin_confirmed DESC,updated_at DESC LIMIT 1', email);
+  if (!c && address && name) c = one('SELECT * FROM platform_customers WHERE archived_at IS NULL AND normalized_address=? AND lower(display_name)=? ORDER BY admin_confirmed DESC,updated_at DESC LIMIT 1', address, text(contact.customer_name ?? contact.name).toLowerCase());
   return c;
 }
 function createCustomerFromContact(contact = {}) {
@@ -969,14 +976,22 @@ function resolveDeliveryQuote(body) {
   let zone = null;
   if (override) zone = one('SELECT * FROM delivery_zones WHERE id=? AND territory_id=? AND active=1', override.zone_id, terr.id);
   if (!zone && body.lng != null && body.lat != null) zone = naturalZone(terr.id, body.lng, body.lat);
-  // Safe fallback while Mapbox is not configured: retain today's manual zone selector.
-  if (!zone && (body.lng == null || body.lat == null) && text(body.zone_id)) zone = one('SELECT * FROM delivery_zones WHERE id=? AND territory_id=? AND active=1', text(body.zone_id), terr.id);
   if (!zone) return { territory: { id: terr.id, name: terr.name, slug: terr.slug }, serviceable: false, zone: null, override: null };
   const baseFee = int(zone.fee_cents ?? Math.round(Number(zone.fee || 0) * 100));
   const feeOverride = override && override.fee_cents != null ? int(override.fee_cents) : null;
+  const qty = Array.isArray(body.items) ? body.items.reduce((sum,x)=>sum+Math.max(0,int(x.qty ?? x.quantity ?? x.q)),0) : Math.max(0,int(body.qty));
+  let finalFee = baseFee, reason = '';
+  if (feeOverride != null) {
+    finalFee = Math.max(0,feeOverride);
+    if (finalFee < baseFee) reason = text(override.note) || 'VIP Customer Discount';
+  } else if (text(zone.name).toLowerCase() === 'green' && qty >= 10) {
+    finalFee = 0;
+    reason = '10+ Can Delivery Reward';
+  }
+  const savings = Math.max(0,baseFee-finalFee);
   return {
     territory: { id: terr.id, name: terr.name, slug: terr.slug }, serviceable: true,
-    zone: { id: zone.id, name: zone.name, color_label: zone.color_label, fee_cents: feeOverride == null ? baseFee : feeOverride, base_fee_cents: baseFee, free_at_qty: zone.free_at_qty },
+    zone: { id: zone.id, name: zone.name, color_label: zone.color_label, fee_cents: finalFee, base_fee_cents: baseFee, delivery_savings_cents: savings, delivery_discount_reason: savings ? reason : '', free_at_qty: text(zone.name).toLowerCase() === 'green' ? 10 : null },
     override: override ? { id: override.id, applied: true, fee_cents: feeOverride, note: text(override.note) } : null
   };
 }
@@ -999,13 +1014,14 @@ async function createPublicPlatformOrder(body) {
   const trusted = { ...body, zone_id: quote.zone.id };
   delete trusted.delivery_fee; delete trusted.delivery_fee_cents;
   if (body.lat != null && body.lng != null) { trusted.address_lat = Number(body.lat); trusted.address_lng = Number(body.lng); }
-  if (quote.override?.fee_cents != null) trusted.delivery_fee_cents = int(quote.override.fee_cents);
+  trusted.delivery_fee_cents = int(quote.zone.fee_cents);
+  trusted.delivery_discount_reason = text(quote.zone.delivery_discount_reason);
   if (quote.override?.applied) trusted.zone_override_note = `Saved delivery exception${quote.override.note ? ': '+quote.override.note : ''}`;
   const core = await corePublicPost('/api/public/orders', trusted);
   if (core.status < 200 || core.status >= 300) return core;
   const linked = linkOrderToCustomer(core.body.id);
   if (text(body.fulfillment_type) && one('SELECT 1 FROM orders WHERE id=?', core.body.id)) run('UPDATE orders SET fulfillment_type=?,updated_at=? WHERE id=?', text(body.fulfillment_type), now(), core.body.id);
-  return { status: core.status, body: { ...core.body, customer_status: linked ? { returning_customer: linked.returning_customer, previous_order_count: linked.previous_order_count, order_count: linked.order_count, loyalty_stars: linked.loyalty_stars, loyalty_label: linked.loyalty_label } : null, delivery_override_applied: !!quote.override?.applied } };
+  return { status: core.status, body: { ...core.body, customer_status: linked ? { returning_customer: linked.returning_customer, previous_order_count: linked.previous_order_count, order_count: linked.order_count } : null, delivery_override_applied: !!quote.override?.applied } };
 }
 function saveZoneOverride(territoryId, b) {
   const type = ['address','street','customer'].includes(text(b.match_type)) ? text(b.match_type) : 'address';
@@ -1037,7 +1053,7 @@ function customerAdminList(territoryId = '', q = '') {
   let rows = all(`SELECT c.*,(SELECT COUNT(*) FROM platform_customer_orders co WHERE co.customer_id=c.id) order_count,
     (SELECT MAX(o.created_at) FROM platform_customer_orders co JOIN orders o ON o.id=co.order_id WHERE co.customer_id=c.id) last_order
     FROM platform_customers c
-    WHERE (?='' OR lower(c.display_name) LIKE ? OR lower(c.phone) LIKE ? OR lower(c.email) LIKE ? OR lower(c.address) LIKE ?)
+    WHERE c.archived_at IS NULL AND (?='' OR lower(c.display_name) LIKE ? OR lower(c.phone) LIKE ? OR lower(c.email) LIKE ? OR lower(c.address) LIKE ?)
     ORDER BY COALESCE(last_order,c.updated_at) DESC LIMIT 250`, text(q), query, query, query, query);
   if (territoryId) rows = rows.filter(c => !!one(`SELECT 1 FROM platform_customer_orders co WHERE co.customer_id=? AND co.territory_id=? LIMIT 1`, c.id, territoryId));
   return rows;
@@ -1057,6 +1073,12 @@ function updateCustomer(customerId, b) {
   run(`UPDATE platform_customers SET display_name=?,phone=?,email=?,address=?,normalized_phone=?,normalized_email=?,normalized_address=?,loyalty_stars=?,loyalty_label=?,admin_confirmed=?,updated_at=? WHERE id=?`,
     name,phone,email,address,normalizePhoneKey(phone),normalizeEmailKey(email),normalizeAddressKey(address),Math.max(0,Math.min(5,int(b.loyalty_stars ?? c.loyalty_stars))),text(b.loyalty_label ?? c.loyalty_label),bool(b.admin_confirmed ?? c.admin_confirmed),now(),customerId);
   return customerAdminDetail(customerId);
+}
+function archiveCustomer(customerId) {
+  const c = one('SELECT * FROM platform_customers WHERE id=?', customerId);
+  if (!c) throw new Error('Customer not found');
+  if (!c.archived_at) run('UPDATE platform_customers SET archived_at=?,updated_at=? WHERE id=?', now(), now(), customerId);
+  return { ok:true, archived:true, customer_id:customerId };
 }
 function mergeCustomers(targetId, sourceId) {
   if (targetId === sourceId) throw new Error('Choose two different customer records');
@@ -1083,7 +1105,7 @@ function saveProductRating(productId, b) {
 function businessOrderNotificationHtml(order) {
   const items = all('SELECT * FROM order_items WHERE order_id=? ORDER BY rowid', order.id);
   const money = cents => new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format((Number(cents)||0)/100);
-  const itemRows = items.map(x => `<tr><td style="padding:8px 0;border-bottom:1px solid #ddd">${int(x.qty)} × ${escapeHtml(x.brand_snapshot)} ${escapeHtml(x.product_name_snapshot)}${x.strength_snapshot?` • ${escapeHtml(x.strength_snapshot)}`:''}</td><td style="padding:8px 0;border-bottom:1px solid #ddd;text-align:right">${money(x.line_total_cents)}</td></tr>`).join('');
+  const itemRows = items.map(x => `<tr><td style="padding:8px 0;border-bottom:1px solid #ddd">${int(x.qty)} × ${escapeHtml(x.brand_snapshot)} ${escapeHtml(x.product_name_snapshot)}${x.strength_snapshot?` • ${escapeHtml(displayStrength(x.strength_snapshot))}`:''}</td><td style="padding:8px 0;border-bottom:1px solid #ddd;text-align:right">${money(x.line_total_cents)}</td></tr>`).join('');
   return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#171717"><div style="max-width:640px;margin:auto"><h1>New order #${escapeHtml(order.order_no)}</h1><p><b>Status:</b> ${escapeHtml(order.status)}<br><b>Placed:</b> ${escapeHtml(order.created_at)}<br><b>Source:</b> ${escapeHtml(order.source)}</p><h2>Customer</h2><p><b>${escapeHtml(order.customer_name||'Customer')}</b><br>${escapeHtml(order.customer_phone||'')}${order.customer_email?`<br>${escapeHtml(order.customer_email)}`:''}</p><p><b>Delivery address</b><br>${escapeHtml(order.address||'')}</p>${order.delivery_notes?`<p><b>Delivery instructions</b><br>${escapeHtml(order.delivery_notes)}</p>`:''}${order.delivery_window_label?`<p><b>Delivery window:</b> ${escapeHtml(order.delivery_window_label)}</p>`:''}<table style="width:100%;border-collapse:collapse">${itemRows}<tr><td style="padding-top:12px">Products</td><td style="padding-top:12px;text-align:right">${money(order.subtotal_cents)}</td></tr><tr><td>Delivery${order.zone_name_snapshot?` • ${escapeHtml(order.zone_name_snapshot)}`:''}</td><td style="text-align:right">${money(order.delivery_fee_cents)}</td></tr>${int(order.customer_discount_cents)>0?`<tr><td>Discount</td><td style="text-align:right">−${money(order.customer_discount_cents)}</td></tr>`:''}<tr><td style="font-size:18px;font-weight:bold;padding-top:9px">TOTAL</td><td style="font-size:18px;font-weight:bold;padding-top:9px;text-align:right">${money(order.total_cents)}</td></tr></table><p><b>Payment:</b> ${escapeHtml(order.payment_method||'Not specified')}${order.payment_note?`<br>${escapeHtml(order.payment_note)}`:''}</p><p><a href="${PUBLIC_BASE_URL}/admin">Open Control Room</a></p></div></body></html>`;
 }
 async function sendBusinessNewOrderNotifications(orderId) {
@@ -1274,6 +1296,7 @@ async function handlePlatform(req, res, url) {
   const adminCustomer = url.pathname.match(/^\/api\/admin\/platform\/customers\/([^/]+)$/);
   if (adminCustomer && req.method === 'GET') { const x=customerAdminDetail(decodeURIComponent(adminCustomer[1])); return x?send(res,200,x):send(res,404,{error:'Customer not found'}); }
   if (adminCustomer && req.method === 'PUT') return send(res,200,updateCustomer(decodeURIComponent(adminCustomer[1]),await readBody(req)));
+  if (adminCustomer && req.method === 'DELETE') return send(res,200,archiveCustomer(decodeURIComponent(adminCustomer[1])));
   const adminCustomerNote = url.pathname.match(/^\/api\/admin\/platform\/customers\/([^/]+)\/notes$/);
   if (adminCustomerNote && req.method === 'POST') { const cid=decodeURIComponent(adminCustomerNote[1]); if(!one('SELECT 1 FROM platform_customers WHERE id=?',cid))return send(res,404,{error:'Customer not found'}); const b=await readBody(req); addCustomerNote(cid,b.order_id||null,b.note,'admin',null); return send(res,201,customerAdminDetail(cid)); }
   const adminCustomerMerge = url.pathname.match(/^\/api\/admin\/platform\/customers\/([^/]+)\/merge$/);
