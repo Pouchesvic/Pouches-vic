@@ -324,6 +324,68 @@ module.exports = function createCompanyStock({ db, now, id, text, int, bool, jso
     return syncLegacyInventory(territoryId, productId);
   }
 
+  function adjustCompanyReserve({ productId, qtyDelta, movementType = 'manual_correction', note = '', role = 'system', driverSourceId = null }) {
+    const delta = int(qtyDelta);
+    if (!text(productId)) throw new Error('Choose a product.');
+    if (!delta) return int(ensureCompanyProduct(productId).reserve_qty);
+    return updateReserve(productId, delta, { movementType, note, role, driverSourceId });
+  }
+
+  function setPhysicalTarget({ territoryId, productId, target, note = 'Physical stock updated' }) {
+    const desired = int(target, -1);
+    if (!territoryId || !productId || desired < 0) throw new Error('Enter a physical stock amount of zero or more.');
+    return db.transaction(() => {
+      let row = ensureTerritoryProduct(territoryId, productId);
+      const reserved = int(row.linked_reserved_qty) + int(row.independent_reserved_qty);
+      const before = ['linked','independent'].reduce((sum, pool) => sum + ['sellable','reserved','held'].reduce((n, bucket) => n + int(row[stockColumn(pool, bucket)]), 0), 0);
+      if (desired < reserved) throw new Error(`${reserved} cans are reserved for active orders, so physical stock cannot be set below ${reserved}.`);
+      const delta = desired - before;
+      if (delta > 0) {
+        const pool = poolPolicy(productId).mode;
+        updateBucket(territoryId, productId, pool, 'held', delta, { movementType: 'physical_stock_target', note, role: 'admin' });
+      } else if (delta < 0) {
+        let remaining = -delta;
+        for (const bucket of ['held','sellable']) {
+          for (const pool of ['linked','independent']) {
+            row = ensureTerritoryProduct(territoryId, productId);
+            const take = Math.min(remaining, int(row[stockColumn(pool, bucket)]));
+            if (!take) continue;
+            updateBucket(territoryId, productId, pool, bucket, -take, { movementType: 'physical_stock_target', note, role: 'admin' });
+            remaining -= take;
+          }
+        }
+        if (remaining) throw new Error('There are not enough unreserved cans to make that change.');
+      }
+      return { ...productSummary(productId, territoryId), change: delta, added_held: Math.max(0, delta) };
+    })();
+  }
+
+  function setAvailableTarget({ territoryId, productId, target, note = 'Customer availability updated' }) {
+    const desired = int(target, -1);
+    if (!territoryId || !productId || desired < 0) throw new Error('Enter an available amount of zero or more.');
+    return db.transaction(() => {
+      let row = ensureTerritoryProduct(territoryId, productId);
+      const current = int(row.linked_sellable_qty) + int(row.independent_sellable_qty);
+      const held = int(row.linked_held_qty) + int(row.independent_held_qty);
+      if (desired > current + held) throw new Error(`Only ${current + held} unreserved cans can be made available.`);
+      let remaining = Math.abs(desired - current);
+      const releasing = desired > current;
+      for (const pool of ['linked','independent']) {
+        if (!remaining) break;
+        row = ensureTerritoryProduct(territoryId, productId);
+        const from = releasing ? 'held' : 'sellable', to = releasing ? 'sellable' : 'held';
+        const take = Math.min(remaining, int(row[stockColumn(pool, from)]));
+        if (!take) continue;
+        const transferId = id();
+        updateBucket(territoryId, productId, pool, from, -take, { movementType: 'available_stock_target', note, role: 'admin', relatedPool: `${pool}_${to}`, metadata: { transfer_id: transferId } });
+        updateBucket(territoryId, productId, pool, to, take, { movementType: 'available_stock_target', note, role: 'admin', relatedPool: `${pool}_${from}`, metadata: { transfer_id: transferId } });
+        remaining -= take;
+      }
+      if (remaining) throw new Error('There are not enough cans to make that change.');
+      return productSummary(productId, territoryId);
+    })();
+  }
+
   function receive(body) {
     const productId = text(body.product_id), qty = Math.max(0, int(body.qty));
     if (!productId || !qty) throw new Error('Product and a positive quantity are required');
@@ -573,6 +635,8 @@ module.exports = function createCompanyStock({ db, now, id, text, int, bool, jso
       '/api/admin/company-stock/hold': holdOrRelease,
       '/api/admin/company-stock/transfer': transfer,
       '/api/admin/company-stock/convert': convert,
+      '/api/admin/company-stock/physical-target': setPhysicalTarget,
+      '/api/admin/company-stock/available-target': setAvailableTarget,
     };
     if (operations[url.pathname] && req.method === 'POST') { send(res, 200, operations[url.pathname](await bodyJson(req))); return true; }
     send(res, 404, { error: 'Company Stock endpoint not found' }); return true;
@@ -589,6 +653,9 @@ module.exports = function createCompanyStock({ db, now, id, text, int, bool, jso
     releaseOrder,
     finalizeOrder,
     adjustTerritory,
+    adjustCompanyReserve,
+    setPhysicalTarget,
+    setAvailableTarget,
     catalogList,
     productSummary,
     history,

@@ -2,6 +2,7 @@
   'use strict';
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const E = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const humanStamp = value => value ? new Intl.DateTimeFormat('en-CA',{weekday:'long',month:'long',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(value)) : '';
   let config = null;
 
   async function preq(url, opt={}) {
@@ -63,7 +64,7 @@
         <input id="pvAddPhotos" type="file" accept="image/*" multiple hidden>
         <div class="two"><button class="btn ghost" id="pvTakePhotoBtn">TAKE PHOTO</button><button class="btn ghost" id="pvAddPhotosBtn">ADD FROM PHONE</button></div>
         <div id="pvPhotoStatus" class="muted" style="margin-top:7px"></div>
-        ${photos.length?`<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px">${photos.map(ph=>`<div style="background:#f6f6f4;border-radius:12px;padding:8px"><img src="${E(ph.content_url)}" alt="Order photo" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:9px;background:#ddd"><div class="muted" style="margin:5px 0"><b>${E(String(ph.stage||'general').toUpperCase())}</b><br>${new Date(ph.created_at).toLocaleString()}</div>${p.driver_can_delete!==false?`<button class="btn ghost" style="padding:8px" onclick="window.pvDeleteOrderPhoto('${ph.id}','${orderId}')">DELETE / RETAKE</button>`:''}</div>`).join('')}</div>`:''}`;
+        ${photos.length?`<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px">${photos.map(ph=>`<div style="background:#f6f6f4;border-radius:12px;padding:8px"><img src="${E(ph.content_url)}" alt="Order photo" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:9px;background:#ddd"><div class="muted" style="margin:5px 0"><b>${E(String(ph.stage||'general').toUpperCase())}</b><br>${E(humanStamp(ph.created_at))}</div>${p.driver_can_delete!==false?`<button class="btn ghost" style="padding:8px" onclick="window.pvDeleteOrderPhoto('${ph.id}','${orderId}')">DELETE / RETAKE</button>`:''}</div>`).join('')}</div>`:''}`;
       document.getElementById('pvTakePhotoBtn').onclick=()=>document.getElementById('pvTakePhoto').click();
       document.getElementById('pvAddPhotosBtn').onclick=()=>document.getElementById('pvAddPhotos').click();
       document.getElementById('pvTakePhoto').onchange=e=>uploadFiles(orderId,e.target.files);
@@ -105,7 +106,7 @@
           const banner = document.createElement('div');
           banner.className = 'good';
           banner.style.background = '#fff1a8';
-          banner.innerHTML = `<b>⚠ ORDER UPDATED</b><div style="margin-top:5px">Customer support changed this order at ${E(new Date(o.support_updated_at).toLocaleString())}. The address and delivery notes shown below are the current version.</div>`;
+          banner.innerHTML = `<b>⚠ ORDER UPDATED</b><div style="margin-top:5px">Customer support changed this order at ${E(humanStamp(o.support_updated_at))}. The address and delivery notes shown below are the current version.</div>`;
           const h = document.querySelector('#detail h2'); if (h) h.insertAdjacentElement('afterend', banner);
         }
         const buttons = document.getElementById('driverStatusActions');
@@ -141,7 +142,7 @@
       const host=document.createElement('div');host.id='pvCustomerContext';
       host.innerHTML=`<div class="hr"></div><h3>CUSTOMER CONTEXT</h3>
         <div class="good" style="${returning||stars?'background:#e7f5e7':'background:#f6f6f4'}"><b>${stars?'★'.repeat(stars)+' '+E(c.loyalty_label||'LOYAL CUSTOMER'):returning?'★ RETURNING CUSTOMER':'FIRST RECORDED ORDER'}</b><div style="margin-top:5px">${Number(c.previous_order_count)||0} previous order${Number(c.previous_order_count)===1?'':'s'}. This is just a familiarity heads-up.</div></div>
-        ${(c.notes||[]).length?`<div style="margin-top:9px"><b>PREVIOUS CUSTOMER NOTES</b>${(c.notes||[]).slice(0,6).map(n=>`<div class="warn" style="margin-top:7px"><div>${E(n.note)}</div><div class="muted" style="margin-top:4px">${E(n.driver_name||n.created_by_role)} • ${new Date(n.created_at).toLocaleString()}</div></div>`).join('')}</div>`:'<div class="muted" style="margin-top:8px">No previous customer notes.</div>'}
+        ${(c.notes||[]).length?`<div style="margin-top:9px"><b>PREVIOUS CUSTOMER NOTES</b>${(c.notes||[]).slice(0,6).map(n=>`<div class="warn" style="margin-top:7px"><div>${E(n.note)}</div><div class="muted" style="margin-top:4px">${E(n.driver_name||n.created_by_role)} • ${E(humanStamp(n.created_at))}</div></div>`).join('')}</div>`:'<div class="muted" style="margin-top:8px">No previous customer notes.</div>'}
         <div class="field"><label>ADD NOTE FOR NEXT TIME</label><textarea id="pvCustomerNote" placeholder="Example: customer mentioned an issue with the last order"></textarea></div><button class="btn ghost" style="width:100%" id="pvSaveCustomerNote">SAVE CUSTOMER NOTE</button>`;
       detail.appendChild(host);
       document.getElementById('pvSaveCustomerNote').onclick=async()=>{try{const note=document.getElementById('pvCustomerNote').value.trim();if(!note)return alert('Write a short note first.');await preq(`/api/driver/platform/orders/${encodeURIComponent(orderId)}/customer-notes`,{method:'POST',body:JSON.stringify({note})});await renderCustomer(orderId);}catch(e){alert(e.message)}};

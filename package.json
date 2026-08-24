@@ -4,7 +4,8 @@
   "private": true,
   "description": "Multi-territory Pouches Vic storefront, operations admin, inventory, orders, dispatch and settlements",
   "scripts": {
-    "start": "node -r ./platform-extension.js server.js"
+    "start": "node -r ./platform-extension.js server.js",
+    "test:final": "node scripts/final-patch-regression.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

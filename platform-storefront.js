@@ -92,13 +92,13 @@
     const city=territoryUi?.territory?.name||window.data?.territory?.name||'';
     const query = /,/.test(q) ? q : `${q}, ${city}, BC`;
     const url=`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${encodeURIComponent(t)}&autocomplete=true&country=ca&types=address,poi&limit=6`;
-    const r=await nativeFetch(url); if(!r.ok)return[]; const j=await r.json(); return j.features||[];
+    const r=await nativeFetch(url); if(!r.ok)throw Error('Address suggestions are temporarily unavailable.'); const j=await r.json(); return j.features||[];
   }
   function addressSuggest(input, listId, statusId, onPick){
     clearTimeout(suggestTimer);const box=document.getElementById(listId),status=document.getElementById(statusId);if(box)box.hidden=true;
     const q=input.value.trim(); if(q.length<3)return;
-    if(!token()){if(status)status.innerHTML='<span class="pv-bad">Live address lookup is temporarily unavailable. Please contact PouchesVic before ordering.</span>';return;}
-    suggestTimer=setTimeout(async()=>{try{const features=await mapboxSuggestions(q);if(!box)return;box.innerHTML=features.map((f,i)=>`<button type="button" class="pv-suggestion" data-i="${i}">${E(f.place_name||f.text||'')}</button>`).join('');box.hidden=!features.length;box.onclick=e=>{const b=e.target.closest('[data-i]');if(!b)return;box.hidden=true;onPick(features[Number(b.dataset.i)]);};}catch{}},220);
+    if(!token()){if(status)status.innerHTML='<span class="pv-warn">Live address lookup is unavailable. Use “I can’t enter my exact address” to place the order and we’ll confirm the meeting spot.</span>';return;}
+    suggestTimer=setTimeout(async()=>{try{const features=await mapboxSuggestions(q);if(!box)return;box.innerHTML=features.map((f,i)=>`<button type="button" class="pv-suggestion" data-i="${i}">${E(f.place_name||f.text||'')}</button>`).join('');box.hidden=!features.length;box.onclick=e=>{const b=e.target.closest('[data-i]');if(!b)return;box.hidden=true;onPick(features[Number(b.dataset.i)]);};}catch(error){if(box)box.hidden=true;if(status)status.innerHTML=`<span class="pv-warn">${E(error.message||'Address suggestions are temporarily unavailable.')} Use the manual meeting-location option if needed.</span>`;}},220);
   }
   async function selectAddressFeature(feature,input,statusId){
     const center=feature?.center||[],address=feature?.place_name||input.value.trim();input.value=address;
@@ -114,7 +114,8 @@
   function renderAddressStatus(id,q){
     const el=document.getElementById(id);if(!el)return;
     if(q?.serviceable)el.innerHTML=`<span class="pv-good">✓ ${E(q.zone.name)} delivery area • ${Number(q.zone.fee_cents)===0?'FREE':money(q.zone.fee_cents)}${q.override?.applied?' • saved exception applied':''}</span>`;
-    else el.innerHTML='<span class="pv-bad">Delivery is unavailable at this address. Please choose another suggested address or contact PouchesVic.</span>';
+    else if(q?.territory_mismatch)el.innerHTML=`<span class="pv-warn">This address is in ${E(q.territory_mismatch.territory.name)}. Switch to that delivery area or go back.</span>`;
+    else el.innerHTML='<span class="pv-bad">Delivery is unavailable at this address. Choose another suggested address or use the manual meeting-location option.</span>';
   }
   function renderTerritoryExtras(){
     document.getElementById('pvAnnouncement')?.remove();document.getElementById('pvHelp')?.remove();
@@ -149,7 +150,7 @@
     let sug=document.createElement('div');sug.id='pvCheckoutSuggestions';sug.className='pv-suggestions';sug.hidden=true;address.parentElement.style.position='relative';address.insertAdjacentElement('afterend',sug);
     const st=document.createElement('div');st.id='pvCheckoutAddressStatus';st.className='pv-address-status';sug.insertAdjacentElement('afterend',st);if(deliveryState.quote)renderAddressStatus('pvCheckoutAddressStatus',deliveryState.quote);
     address.addEventListener('input',()=>{if(normalizeLoose(address.value)!==normalizeLoose(deliveryState.address)){deliveryState={slug:window.currentSlug||'victoria',address:address.value.trim(),lat:null,lng:null,quote:null,method:deliveryState.method||'delivery'};zone.value='';zone.dispatchEvent(new Event('change'));document.getElementById('pvZoneConfirmed')?.remove();st.innerHTML='<span class="pv-warn">Select your address from the live suggestions to confirm delivery.</span>';}addressSuggest(address,'pvCheckoutSuggestions','pvCheckoutAddressStatus',async f=>{await selectAddressFeature(f,address,'pvCheckoutAddressStatus');zone.value=deliveryState.quote?.serviceable?deliveryState.quote.zone.id:'';zone.dispatchEvent(new Event('change'));if(deliveryState.quote?.serviceable)showConfirmedZone(zone,deliveryState.quote);else document.getElementById('pvZoneConfirmed')?.remove();});});
-    const recheck=async()=>{if(!deliveryState.address)return;try{const q=await getQuote();deliveryState.quote=q;saveAddressState();zone.value=q.serviceable?q.zone.id:'';zone.dispatchEvent(new Event('change'));if(q.serviceable)showConfirmedZone(zone,q);else document.getElementById('pvZoneConfirmed')?.remove();renderAddressStatus('pvCheckoutAddressStatus',q);}catch{}};
+    const recheck=async()=>{if(!deliveryState.address)return;try{const q=await getQuote();deliveryState.quote=q;saveAddressState();zone.value=q.serviceable?q.zone.id:'';zone.dispatchEvent(new Event('change'));if(q.serviceable)showConfirmedZone(zone,q);else document.getElementById('pvZoneConfirmed')?.remove();renderAddressStatus('pvCheckoutAddressStatus',q);}catch(error){zone.value='';zone.dispatchEvent(new Event('change'));document.getElementById('pvZoneConfirmed')?.remove();st.innerHTML=`<span class="pv-warn">${E(error.message||'Delivery could not be rechecked.')} Try again or use the manual meeting-location option.</span>`;}};
     document.getElementById('customerPhone')?.addEventListener('blur',recheck);document.getElementById('customerEmail')?.addEventListener('blur',recheck);
   }
   function showConfirmedZone(zone,q){
@@ -158,7 +159,7 @@
 
   function patchQuote(){
     if(!window.currentQuote||window.currentQuote.__pvDeliveryPatched)return;const original=window.currentQuote;
-    const patched=function(){const x=original(),q=deliveryState.quote;if(q?.serviceable&&x?.z?.id===q.zone.id){x.normalDelivery=Number(q.zone.base_fee_cents)||0;if(q.override?.applied&&q.override.fee_cents!=null){x.delivery=Math.max(0,Number(q.override.fee_cents)||0);x.deliveryReason=x.delivery<x.normalDelivery?(q.override.note||'VIP Customer Discount'):'';}else if(String(q.zone.name).toLowerCase()==='green'&&x.q>=10){x.delivery=0;x.deliveryReason='10+ Can Delivery Reward';}else{x.delivery=x.normalDelivery;x.deliveryReason='';}x.deliverySavings=Math.max(0,x.normalDelivery-x.delivery);x.pre=x.subtotal+x.delivery;const step=Math.max(1,Number(window.data?.settings?.round_down_to_cents)||500);x.total=Math.floor(x.pre/step)*step;x.discount=Math.max(0,x.pre-x.total);}return x;};patched.__pvDeliveryPatched=true;window.currentQuote=patched;
+    const patched=function(){const x=original(),q=deliveryState.quote;if(q?.serviceable&&x?.z?.id===q.zone.id){x.normalDelivery=Number(q.zone.base_fee_cents)||0;if(q.override?.applied&&q.override.fee_cents!=null){x.delivery=Math.max(0,Number(q.override.fee_cents)||0);x.deliveryReason=x.delivery<x.normalDelivery?(q.override.note||'VIP Customer Discount'):'';}else if(q.zone.free_at_qty!=null&&x.q>=Number(q.zone.free_at_qty)){x.delivery=0;x.deliveryReason=`${Number(q.zone.free_at_qty)}+ Can Delivery Reward`;}else{x.delivery=x.normalDelivery;x.deliveryReason='';}x.deliverySavings=Math.max(0,x.normalDelivery-x.delivery);x.pre=x.subtotal+x.delivery;const step=Math.max(1,Number(window.data?.settings?.round_down_to_cents)||500);x.total=Math.floor(x.pre/step)*step;x.discount=Math.max(0,x.pre-x.total);}return x;};patched.__pvDeliveryPatched=true;window.currentQuote=patched;
   }
   function patchProductRender(){
     if(window.renderProducts&&!window.renderProducts.__pvStorePatched){const original=window.renderProducts;const patched=function(){const r=original();setTimeout(()=>{applyGenericLabels();renderRatings();},0);return r;};patched.__pvStorePatched=true;window.renderProducts=patched;}

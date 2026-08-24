@@ -6,6 +6,7 @@ const { URL } = require('url');
 const Database = require('./sqlite');
 const webpush = require('web-push');
 const createCompanyStock = require('./company-stock');
+const createFinalOperations = require('./final-operations');
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -25,6 +26,7 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 db.pragma('busy_timeout = 5000');
 let companyStock = null;
+let finalOperations = null;
 
 function now() { return new Date().toISOString(); }
 function id() { return crypto.randomUUID(); }
@@ -50,13 +52,20 @@ function displayStrength(value) {
 function normalizePhone(v) { return text(v); }
 function normalizeEmail(v) { return lower(v); }
 function validEmail(v) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(v)); }
+const PAYMENT_METHOD_REGISTRY=Object.freeze({
+  cash:{label:'Cash',aliases:['cash','cashondelivery'],enabled_setting:'payment_cash_enabled',connected_setting:null},
+  etransfer:{label:'e-Transfer',aliases:['etransfer','etransferondelivery'],enabled_setting:'payment_etransfer_enabled',connected_setting:null},
+  card:{label:'Credit / Debit',aliases:['card','credit','debit','creditcard','debitcard'],enabled_setting:'payment_card_enabled',connected_setting:'payment_card_connected'},
+  paypal:{label:'PayPal',aliases:['paypal'],enabled_setting:'payment_paypal_enabled',connected_setting:'payment_paypal_connected'},
+  crypto:{label:'Crypto',aliases:['crypto','cryptocurrency'],enabled_setting:'payment_crypto_enabled',connected_setting:'payment_crypto_connected'},
+  other:{label:'Other',aliases:['other'],enabled_setting:null,connected_setting:null}
+});
 function normalizePaymentMethod(v) {
   const value=lower(v).replace(/[\s_-]+/g,'');
-  if(value==='cash'||value==='cashondelivery') return 'cash';
-  if(value==='etransfer'||value==='etransferondelivery') return 'etransfer';
-  if(value==='other') return 'other';
+  for(const [key,meta] of Object.entries(PAYMENT_METHOD_REGISTRY))if(meta.aliases.includes(value))return key;
   return '';
 }
+function customerPaymentMethods(){return Object.entries(PAYMENT_METHOD_REGISTRY).filter(([key])=>key!=='other').map(([id,meta])=>{const enabled=meta.enabled_setting?setting(meta.enabled_setting,'false')==='true':false,connected=!meta.connected_setting||setting(meta.connected_setting,'false')==='true';return{id,label:meta.label,enabled:enabled&&connected,configured:connected,status:enabled&&connected?'on':connected?'off':'not_connected'};});}
 function paymentLabel(v) {
   const method=normalizePaymentMethod(v);
   if(method==='cash') return 'Cash on delivery';
@@ -563,6 +572,10 @@ function seed() {
     payment_etransfer_enabled: 'true',
     payment_card_enabled: 'false',
     payment_paypal_enabled: 'false',
+    payment_crypto_enabled: 'false',
+    payment_card_connected: 'false',
+    payment_paypal_connected: 'false',
+    payment_crypto_connected: 'false',
     mapbox_public_token: '',
     order_email_enabled: 'true',
     customer_discount_label: 'Customer Appreciation Discount',
@@ -597,6 +610,8 @@ function ensureDefaultDispatchDrivers() {
   }
 }
 ensureDefaultDispatchDrivers();
+finalOperations = createFinalOperations({ db, companyStock, now, id, text, int, bool, jsonText, safeJson, addOrderEvent });
+globalThis.pvFinalOperations = finalOperations;
 
 
 function ensureVapidKeys() {
@@ -621,9 +636,10 @@ async function sendDriverPush(driverId,orderId){
   const qty=(o.items||[]).reduce((s,x)=>s+int(x.qty),0);
   const subs=all('SELECT * FROM push_subscriptions WHERE driver_id=?',driverId);
   if(!subs.length)return {sent:0};
+  const tz=o.territory_timezone_snapshot||'America/Vancouver',parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value])),today=`${parts.year}-${parts.month}-${parts.day}`,future=o.requested_delivery_date>today;
   const payload=JSON.stringify({
-    title:`New Pouches Vic Order #${o.order_no}`,
-    body:`${qty} cans • ${o.address||o.zone_name_snapshot||'New delivery'} • ${money(o.total_cents)}`,
+    title:future?`NEW FUTURE ORDER #${o.order_no}`:`New Pouches Vic Order #${o.order_no}`,
+    body:future?`${o.requested_delivery_date} • ${o.requested_window_label||'Requested time'} • ${qty} cans`:`${qty} cans • ${o.address||o.meeting_instructions||o.zone_name_snapshot||'New delivery'} • ${o.final_total_pending?'Total pending':money(o.total_cents)}`,
     order_id:o.id,
     order_no:o.order_no,
     url:`/driver?order=${encodeURIComponent(o.id)}`
@@ -807,7 +823,7 @@ function calculateOrder({territory,items,zone,delivery_fee_override_cents=null})
   }
   const normalDelivery=zone ? int(zone.fee_cents ?? cents(zone.fee)) : 0;
   let delivery=normalDelivery,deliveryReason='';
-  if(zone && lower(zone.name)==='green' && qty>=10){delivery=0;deliveryReason='10+ Can Delivery Reward';}
+  if(zone && zone.free_at_qty!=null && qty>=int(zone.free_at_qty)){delivery=0;deliveryReason=`${int(zone.free_at_qty)}+ Can Delivery Reward`;}
   if(delivery_fee_override_cents!=null){
     delivery=Math.max(0,int(delivery_fee_override_cents));
     deliveryReason=delivery<normalDelivery?'VIP Customer Discount':'';
@@ -819,6 +835,9 @@ function calculateOrder({territory,items,zone,delivery_fee_override_cents=null})
   const discount=Math.max(0,pre-total);
   return {qty,subtotal_cents:subtotal,normal_delivery_fee_cents:normalDelivery,delivery_fee_cents:delivery,delivery_savings_cents:deliverySavings,delivery_discount_reason:deliverySavings?deliveryReason:'',pre_discount_total_cents:pre,customer_discount_cents:discount,total_cents:total};
 }
+function geoPolygons(value){const g=typeof value==='string'?safeJson(value):value,geom=g?.type==='Feature'?g.geometry:g;if(geom?.type==='Polygon')return [geom.coordinates];if(geom?.type==='MultiPolygon')return geom.coordinates||[];return [];}
+function segmentsCross(a,b,c,d){const orient=(p,q,r)=>(q[0]-p[0])*(r[1]-p[1])-(q[1]-p[1])*(r[0]-p[0]),o1=orient(a,b,c),o2=orient(a,b,d),o3=orient(c,d,a),o4=orient(c,d,b);return ((o1>0&&o2<0)||(o1<0&&o2>0))&&((o3>0&&o4<0)||(o3<0&&o4>0));}
+function polygonsOverlapGeo(a,b){for(const pa of geoPolygons(a))for(const pb of geoPolygons(b)){const ra=pa[0]||[],rb=pb[0]||[];if(ra[0]&&pointInPolygon(ra[0],pb))return true;if(rb[0]&&pointInPolygon(rb[0],pa))return true;for(let i=1;i<ra.length;i++)for(let j=1;j<rb.length;j++)if(segmentsCross(ra[i-1],ra[i],rb[j-1],rb[j]))return true;}return false;}
 function resolveCart(territory,cart,{allow_unlisted=false}={}) {
   const out=[];
   for(const x of Array.isArray(cart)?cart:[]){
@@ -850,10 +869,12 @@ function insertPayment({order_id=null,territory_id,driver_id=null,method='cash',
 function resolveDispatchDriver(territory,b,source,created_by_driver_id){
   const explicitlyAssigned=text(b.assigned_driver_id)||text(created_by_driver_id);
   if(explicitlyAssigned){
-    const d=one('SELECT id FROM drivers WHERE id=? AND territory_id=? AND active=1 AND archived=0',explicitlyAssigned,territory.id);
+    const d=one(`SELECT d.id FROM drivers d
+      JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1
+      WHERE d.id=? AND d.active=1 AND d.archived=0`,territory.id,explicitlyAssigned);
     return d?d.id:null;
   }
-  if(source!=='web' || !bool(territory.auto_dispatch_enabled)) return null;
+  if(source!=='web' || bool(b.manual_location) || territory.slug==='sooke' || !bool(territory.auto_dispatch_enabled)) return null;
   let d=territory.default_driver_id
     ? one('SELECT id FROM drivers WHERE id=? AND territory_id=? AND active=1 AND archived=0',territory.default_driver_id,territory.id)
     : null;
@@ -871,16 +892,18 @@ function createOrderCore(b,{source='web',created_by_role='customer',created_by_d
   const territory=publicTerritory(text(b.territory_slug)||'victoria') || one('SELECT * FROM territories WHERE id=? AND active=1 AND archived=0',text(b.territory_id));
   if(!territory) throw new Error('Territory unavailable');
   const items=resolveCart(territory,b.items,{allow_unlisted});
+  const schedule=source==='web'?finalOperations.validateSchedule(b,territory):null;
   const requestedQty=items.reduce((sum,x)=>sum+x.q,0);
   const minimumOrderQty=Math.max(1,int(setting('minimum_order_qty','5'),5));
   if(source==='web'&&requestedQty<minimumOrderQty)throw new Error(`Minimum order is ${minimumOrderQty} cans`);
 
   let zone=null;
-  if(b.zone_id) zone=one('SELECT * FROM delivery_zones WHERE id=? AND territory_id=? AND active=1',text(b.zone_id),territory.id);
+  if(!bool(b.manual_location)&&b.zone_id) zone=one('SELECT * FROM delivery_zones WHERE id=? AND territory_id=? AND active=1',text(b.zone_id),territory.id);
   if(b.zone_id&&!zone) throw new Error('The selected delivery area is no longer available');
   if(!zone && b.address_lng!=null && b.address_lat!=null) zone=detectZone(territory.id,num(b.address_lng),num(b.address_lat));
   const deliveryOverride=b.delivery_fee_cents!=null?int(b.delivery_fee_cents):(b.delivery_fee!=null?cents(b.delivery_fee):null);
   const math=calculateOrder({territory,items,zone,delivery_fee_override_cents:deliveryOverride});
+  if(source!=='web'&&b.sale_amount_cents!=null){const sale=Math.max(0,int(b.sale_amount_cents)),qty=Math.max(1,requestedQty);let assigned=0;items.forEach((x,index)=>{x.line_cents=index===items.length-1?sale-assigned:Math.round(sale*x.q/qty);x.unit_cents=Math.floor(x.line_cents/x.q);assigned+=x.line_cents;});math.subtotal_cents=sale;math.normal_delivery_fee_cents=0;math.delivery_fee_cents=0;math.delivery_savings_cents=0;math.delivery_discount_reason='';math.pre_discount_total_cents=sale;math.customer_discount_cents=0;math.total_cents=sale;}
   if(math.delivery_savings_cents>0&&text(b.delivery_discount_reason))math.delivery_discount_reason=text(b.delivery_discount_reason);
   const customerEmail=normalizeEmail(b.customer_email);
   if(customerEmail && !validEmail(customerEmail)) throw new Error('Enter a valid email address or leave it blank');
@@ -905,12 +928,14 @@ function createOrderCore(b,{source='web',created_by_role='customer',created_by_d
 
     run(`UPDATE orders SET normal_delivery_fee_cents=?,delivery_savings_cents=?,delivery_discount_reason=? WHERE id=?`,math.normal_delivery_fee_cents,math.delivery_savings_cents,math.delivery_discount_reason,oid);
 
-    const paymentAmount=b.payment_amount_cents!=null?int(b.payment_amount_cents):(b.payment_amount!=null?cents(b.payment_amount):0);
+    const paymentAmount=b.payment_amount_cents!=null?int(b.payment_amount_cents):(b.payment_amount!=null?cents(b.payment_amount):(source!=='web'&&b.sale_amount_cents!=null?int(b.sale_amount_cents):0));
     if(paymentAmount){
       insertPayment({order_id:oid,territory_id:territory.id,driver_id:assignedDriverId,method:b.payment_method||'cash',amount_cents:paymentAmount,destination_type:b.payment_destination||'driver',destination_driver_id:b.payment_destination_driver_id||null,status:b.payment_status||'received',note:b.payment_note||'',created_by_role,created_by_driver_id});
     }
 
-    addOrderEvent(oid,'order_created',`Order #${ono} created`,{source,qty:math.qty,total_cents:math.total_cents},{created_by_role,created_by_driver_id,visible_to_customer:source==='web'});
+    if(source==='web') finalOperations.applyOrderDetails(oid,b,territory,schedule);
+    addOrderEvent(oid,'order_created',`Order #${ono} created`,{source,qty:math.qty,total_cents:bool(b.manual_location)?null:math.total_cents},{created_by_role,created_by_driver_id,visible_to_customer:source==='web'});
+    if(source!=='web')finalOperations.recordOffsite(oid,b,created_by_role,created_by_driver_id);
     if(assignedDriverId){
       const dd=one('SELECT name FROM drivers WHERE id=?',assignedDriverId);
       addOrderEvent(oid,'auto_dispatched',`Automatically dispatched to ${dd?.name||'driver'}`,{driver_id:assignedDriverId},{created_by_role:'system',visible_to_customer:true});
@@ -919,8 +944,10 @@ function createOrderCore(b,{source='web',created_by_role='customer',created_by_d
     if(status==='completed') companyStock.finalizeOrder(oid,{role:created_by_role,driverId:created_by_driver_id});
   });
   tx();
+  const dispatched=source==='web'?finalOperations.assignByVerifiedZone(oid):one('SELECT * FROM orders WHERE id=?',oid);
   if(status==='completed') snapshotSettlementForOrder(oid);
-  if(source==='web' && assignedDriverId) sendDriverPush(assignedDriverId,oid).catch(console.error);
+  if(source==='web' && dispatched?.assigned_driver_id) sendDriverPush(dispatched.assigned_driver_id,oid).catch(console.error);
+  if(source==='web')for(const watcher of all('SELECT driver_id FROM order_watchers WHERE order_id=?',oid))sendDriverPush(watcher.driver_id,oid).catch(console.error);
   return orderFull(oid);
 }
 
@@ -1070,9 +1097,9 @@ async function sendOrderConfirmation(oid) {
   }
 }
 async function sendBusinessNewOrderNotification(oid) {
-  if (typeof globalThis.pvNotifyNewOrder !== 'function') return;
-  try { await globalThis.pvNotifyNewOrder(oid); }
-  catch (e) { console.error('Business new-order notification failed:', e.message); }
+  if (typeof globalThis.pvNotifyNewOrder !== 'function') return {sent:0,skipped:0,error:'Business email service is unavailable'};
+  try { return await globalThis.pvNotifyNewOrder(oid); }
+  catch (e) { console.error('Business new-order notification failed:', e.message); return {sent:0,skipped:0,error:e.message}; }
 }
 
 // ---------- Read models ----------
@@ -1086,7 +1113,7 @@ function territorySnapshot(tid) {
     WHERE tp.territory_id=? AND tp.listed=1 AND p.active=1 AND p.archived=0 AND tp.inventory>0
     ORDER BY tp.featured DESC,tp.sort_order,p.brand,p.flavor`,tid);
   const windows=all('SELECT id,label,start_time,end_time,days_json,capacity,sort_order FROM delivery_windows WHERE territory_id=? AND active=1 ORDER BY sort_order,start_time',tid);
-  return {territory,tiers,zones,products,windows,settings:{mapbox_public_token:setting('mapbox_public_token',''),payment_cash_enabled:setting('payment_cash_enabled','true')==='true',payment_etransfer_enabled:setting('payment_etransfer_enabled','true')==='true',customer_discount_label:setting('customer_discount_label','Customer Appreciation Discount'),minimum_order_qty:Math.max(1,int(setting('minimum_order_qty','5'),5)),round_down_to_cents:int(setting('round_down_to_cents','500'),500),age_acknowledgement_text:setting('age_acknowledgement_text','')}};
+  return {territory,tiers,zones,products,windows,settings:{mapbox_public_token:setting('mapbox_public_token',''),payment_cash_enabled:setting('payment_cash_enabled','true')==='true',payment_etransfer_enabled:setting('payment_etransfer_enabled','true')==='true',payment_methods:customerPaymentMethods(),customer_discount_label:setting('customer_discount_label','Customer Appreciation Discount'),minimum_order_qty:Math.max(1,int(setting('minimum_order_qty','5'),5)),round_down_to_cents:int(setting('round_down_to_cents','500'),500),age_acknowledgement_text:setting('age_acknowledgement_text','')}};
 }
 function adminBootstrap() {
   return {territories:all('SELECT * FROM territories ORDER BY archived,name'),settings:Object.fromEntries(all('SELECT key,value FROM settings').map(x=>[x.key,x.value]))};
@@ -1097,7 +1124,9 @@ function territoryAdmin(tid) {
     territory,
     tiers:all('SELECT *,COALESCE(unit_price_cents,CAST(ROUND(unit_price*100) AS INTEGER)) resolved_unit_price_cents FROM pricing_tiers WHERE territory_id=? ORDER BY active DESC,sort_order,min_qty',tid),
     zones:all('SELECT *,COALESCE(fee_cents,CAST(ROUND(fee*100) AS INTEGER)) resolved_fee_cents FROM delivery_zones WHERE territory_id=? ORDER BY active DESC,sort_order,name',tid),
-    drivers:all('SELECT * FROM drivers WHERE territory_id=? ORDER BY archived,active DESC,name',tid),
+    drivers:all(`SELECT d.*,m.role membership_role FROM drivers d
+      JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1
+      ORDER BY d.archived,d.active DESC,d.name`,tid),
     rules:all(`SELECT r.*,fd.name from_driver_name,td.name to_driver_name,z.name zone_name FROM settlement_rules r LEFT JOIN drivers fd ON fd.id=r.from_driver_id LEFT JOIN drivers td ON td.id=r.to_driver_id LEFT JOIN delivery_zones z ON z.id=r.zone_id WHERE r.territory_id=? ORDER BY r.archived,r.sort_order,r.name`,tid),
     products:all(`SELECT p.*,tp.id territory_product_id,tp.inventory,tp.listed,tp.featured,tp.local_price_override,tp.local_price_override_cents,tp.sort_order FROM products p LEFT JOIN territory_products tp ON tp.product_id=p.id AND tp.territory_id=? ORDER BY p.archived,p.brand,p.flavor`,tid),
     windows:all('SELECT * FROM delivery_windows WHERE territory_id=? ORDER BY active DESC,sort_order,start_time',tid),
@@ -1111,7 +1140,7 @@ function orderFull(oid) {
   return {...order,items:all('SELECT * FROM order_items WHERE order_id=?',oid),payments:all('SELECT * FROM payments WHERE order_id=? ORDER BY created_at',oid),events:all('SELECT * FROM order_events WHERE order_id=? ORDER BY created_at',oid),adjustments:all('SELECT * FROM order_adjustments WHERE order_id=? ORDER BY created_at',oid)};
 }
 function publicOrderByToken(tok) {
-  const o=one(`SELECT o.id,o.order_no,o.status,o.customer_token,o.customer_name,o.customer_phone,o.customer_email,o.address,o.delivery_notes,o.delivery_window_label,o.zone_name_snapshot,o.payment_method,o.payment_note,o.subtotal_cents,o.normal_delivery_fee_cents,o.delivery_fee_cents,o.delivery_savings_cents,o.delivery_discount_reason,o.pre_discount_total_cents,o.customer_discount_cents,o.total_cents,o.confirmation_email_status,o.created_at,o.completed_at,d.name driver_name,d.customer_contact_number FROM orders o LEFT JOIN drivers d ON d.id=o.assigned_driver_id WHERE o.customer_token=?`,tok);
+  const o=one(`SELECT o.id,o.order_no,o.status,o.customer_token,o.customer_name,o.customer_phone,o.customer_email,o.address,o.delivery_notes,o.delivery_window_label,o.schedule_type,o.requested_delivery_date,o.requested_window_start,o.requested_window_end,o.requested_window_label,o.territory_timezone_snapshot,o.outside_hours_message,o.manual_location,o.meeting_instructions,o.location_confirmed,o.final_total_pending,o.zone_name_snapshot,o.payment_method,o.payment_note,o.subtotal_cents,o.normal_delivery_fee_cents,o.delivery_fee_cents,o.delivery_savings_cents,o.delivery_discount_reason,o.pre_discount_total_cents,o.customer_discount_cents,o.total_cents,o.confirmation_email_status,o.created_at,o.completed_at,d.name driver_name,d.customer_contact_number FROM orders o LEFT JOIN drivers d ON d.id=o.assigned_driver_id WHERE o.customer_token=?`,tok);
   if(!o)return null;
   const items=all('SELECT product_name_snapshot,brand_snapshot,strength_snapshot,qty,unit_price_cents,line_total_cents FROM order_items WHERE order_id=?',o.id);
   const events=all('SELECT event_type,message,created_at FROM order_events WHERE order_id=? AND visible_to_customer=1 ORDER BY created_at',o.id);
@@ -1140,14 +1169,17 @@ function saveTerritoryEntity(kind,tid,b) {
       const args=[text(b.name),bool(b.active),text(b.role)||'driver',text(b.email),normalizePhone(b.phone),normalizePhone(b.customer_contact_number),text(b.notes),t];
       if(text(b.pin))args.push(hashPin(b.pin)); args.push(driverId,tid);
       run(`UPDATE drivers SET name=?,active=?,role=?,email=?,phone=?,customer_contact_number=?,notes=?,updated_at=?${pinClause} WHERE id=? AND territory_id=?`,...args);
+      if(b.personal_use_rate_cents!=null)finalOperations.updatePersonalRate({role:'admin'},driverId,{personal_use_rate_cents:b.personal_use_rate_cents});
     } else {
       driverId=id();
       run(`INSERT INTO drivers(id,territory_id,name,active,archived,role,email,phone,customer_contact_number,notes,pin_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         driverId,tid,text(b.name),bool(b.active??true),0,text(b.role)||'driver',text(b.email),normalizePhone(b.phone),normalizePhone(b.customer_contact_number),text(b.notes),text(b.pin)?hashPin(b.pin):'',t,t);
+      if(b.personal_use_rate_cents!=null)finalOperations.updatePersonalRate({role:'admin'},driverId,{personal_use_rate_cents:b.personal_use_rate_cents});
     }
     const terr=one('SELECT default_driver_id FROM territories WHERE id=?',tid);
     const current=terr?.default_driver_id?one('SELECT id FROM drivers WHERE id=? AND active=1 AND archived=0',terr.default_driver_id):null;
     if(!current && bool(b.active??true)) run('UPDATE territories SET default_driver_id=?,updated_at=? WHERE id=?',driverId,t,tid);
+    run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,created_at,updated_at) VALUES(?,?,?,1,?,?) ON CONFLICT(driver_id,territory_id) DO UPDATE SET active=1,updated_at=excluded.updated_at`,driverId,tid,text(b.membership_role)||'driver',t,t);
   }
   if(kind==='rule'){
     const amountC=b.amount_cents!=null?int(b.amount_cents):cents(b.amount);
@@ -1201,6 +1233,10 @@ const server=http.createServer(async(req,res)=>{
 
     // Public
     if(url.pathname==='/api/public/territories'&&req.method==='GET') return send(res,200,all('SELECT id,name,slug,domain FROM territories WHERE active=1 AND archived=0 ORDER BY name'));
+    if(url.pathname==='/api/public/schedule'&&req.method==='GET'){
+      const terr=publicTerritory(text(url.searchParams.get('territory_slug'))||'victoria');if(!terr)return send(res,404,{error:'Delivery area not found'});
+      return send(res,200,finalOperations.scheduleConfig(terr.id,text(url.searchParams.get('date'))));
+    }
     const pubTerr=url.pathname.match(/^\/api\/public\/territory\/([^/]+)$/);
     if(pubTerr&&req.method==='GET'){
       const terr=publicTerritory(decodeURIComponent(pubTerr[1])); if(!terr)return send(res,404,{error:'Territory not found'});
@@ -1213,19 +1249,27 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/api/public/orders'&&req.method==='POST'){
       const b=await bodyJson(req);
       if(!b.age_acknowledged) return send(res,400,{error:'Age acknowledgement is required'});
-      if(!text(b.customer_name)||!text(b.customer_phone)||!text(b.address)) return send(res,400,{error:'Name, cell number and delivery address are required'});
+      if(!text(b.customer_name)||!text(b.customer_phone)||(!bool(b.manual_location)&&!text(b.address))) return send(res,400,{error:'Name, cell number and a delivery address or meeting location are required'});
       if(text(b.customer_email)&&!validEmail(b.customer_email)) return send(res,400,{error:'Enter a valid email address or leave it blank'});
-      if(!text(b.zone_id)) return send(res,400,{error:'Please choose your delivery area'});
+      const platformVerified=req.headers['x-pv-platform-internal']==='1';
+      if(!bool(b.manual_location)&&!platformVerified){
+        if(b.address_lat==null||b.address_lng==null)return send(res,400,{error:'Select your address from the live suggestions so its delivery area can be verified.'});
+        const territory=publicTerritory(text(b.territory_slug)||'victoria'),detected=territory?detectZone(territory.id,num(b.address_lng),num(b.address_lat)):null;
+        if(!detected)return send(res,400,{error:'That exact location is outside the selected delivery area.'});
+        if(text(b.zone_id)&&text(b.zone_id)!==detected.id)return send(res,400,{error:`This address is in ${detected.name}. Please review the delivery area before ordering.`});
+        b.zone_id=detected.id;
+      }
+      if(!bool(b.manual_location)&&!text(b.zone_id)) return send(res,400,{error:'Please choose your delivery area'});
       const method=normalizePaymentMethod(b.payment_method);
       if(!method) return send(res,400,{error:'Please choose a valid payment method'});
-      if(method==='cash'&&setting('payment_cash_enabled','true')!=='true') return send(res,400,{error:'Cash on delivery is not currently available'});
-      if(method==='etransfer'&&setting('payment_etransfer_enabled','true')!=='true') return send(res,400,{error:'e-Transfer on delivery is not currently available'});
+      const paymentState=customerPaymentMethods().find(x=>x.id===method);
+      if(!paymentState?.enabled)return send(res,400,{error:`${PAYMENT_METHOD_REGISTRY[method]?.label||'That payment method'} is not connected or available.`});
       b.payment_method=method;
       const o=createOrderCore(b,{source:'web',created_by_role:'customer'});
       await sendOrderConfirmation(o.id);
-      await sendBusinessNewOrderNotification(o.id);
+      const businessEmail=await sendBusinessNewOrderNotification(o.id);
       const fresh=orderFull(o.id);
-      return send(res,201,{id:fresh.id,order_no:fresh.order_no,subtotal_cents:fresh.subtotal_cents,normal_delivery_fee_cents:fresh.normal_delivery_fee_cents,delivery_fee_cents:fresh.delivery_fee_cents,delivery_savings_cents:fresh.delivery_savings_cents,delivery_discount_reason:fresh.delivery_discount_reason,pre_discount_total_cents:fresh.pre_discount_total_cents,customer_discount_cents:fresh.customer_discount_cents,total_cents:fresh.total_cents,zone_name:fresh.zone_name_snapshot,confirmation_email_status:fresh.confirmation_email_status,status_url:orderStatusUrl(fresh)});
+      return send(res,201,{id:fresh.id,order_no:fresh.order_no,subtotal_cents:fresh.subtotal_cents,normal_delivery_fee_cents:fresh.normal_delivery_fee_cents,delivery_fee_cents:fresh.final_total_pending?null:fresh.delivery_fee_cents,delivery_savings_cents:fresh.delivery_savings_cents,delivery_discount_reason:fresh.delivery_discount_reason,pre_discount_total_cents:fresh.final_total_pending?null:fresh.pre_discount_total_cents,customer_discount_cents:fresh.final_total_pending?null:fresh.customer_discount_cents,total_cents:fresh.final_total_pending?null:fresh.total_cents,zone_name:fresh.zone_name_snapshot,confirmation_email_status:fresh.confirmation_email_status,business_email:businessEmail,status_url:orderStatusUrl(fresh),schedule_type:fresh.schedule_type,requested_delivery_date:fresh.requested_delivery_date,requested_window_label:fresh.requested_window_label,outside_hours_message:fresh.outside_hours_message,manual_location:!!fresh.manual_location,meeting_instructions:fresh.meeting_instructions,final_total_pending:!!fresh.final_total_pending});
     }
     const pubOrder=url.pathname.match(/^\/api\/public\/orders\/token\/([^/]+)$/);
     if(pubOrder&&req.method==='GET'){
@@ -1279,7 +1323,8 @@ const server=http.createServer(async(req,res)=>{
     const dispatchInfo=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/dispatch-settings$/);
     if(dispatchInfo&&req.method==='PUT'){
       const b=await bodyJson(req),tid=decodeURIComponent(dispatchInfo[1]),driverId=text(b.default_driver_id);
-      if(driverId && !one('SELECT id FROM drivers WHERE id=? AND territory_id=? AND active=1 AND archived=0',driverId,tid)) throw new Error('Choose an active driver from this city');
+      if(driverId && !one(`SELECT d.id FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id
+        WHERE d.id=? AND m.territory_id=? AND m.active=1 AND d.active=1 AND d.archived=0`,driverId,tid)) throw new Error('Choose an active driver from this city');
       run('UPDATE territories SET auto_dispatch_enabled=?,default_driver_id=?,updated_at=? WHERE id=?',bool(b.auto_dispatch_enabled),driverId||null,now(),tid);
       return send(res,200,{ok:true});
     }
@@ -1291,6 +1336,25 @@ const server=http.createServer(async(req,res)=>{
         text(b.operating_hours),text(b.same_day_text)||'SAME-DAY DELIVERY',text(b.payment_note_text)||'No upfront payment — pay when your order arrives.',now(),tid);
       return send(res,200,{ok:true});
     }
+    const mapCheck=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/map-check$/);
+    if(mapCheck&&req.method==='GET'){const zones=all("SELECT name,geojson FROM delivery_zones WHERE territory_id=? AND active=1 AND COALESCE(geojson,'')<>'' ORDER BY sort_order,name",decodeURIComponent(mapCheck[1])),overlaps=[];for(let i=0;i<zones.length;i++)for(let j=i+1;j<zones.length;j++)if(polygonsOverlapGeo(zones[i].geojson,zones[j].geojson))overlaps.push([zones[i].name,zones[j].name]);return send(res,200,{overlaps});}
+    const dispatchRules=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/dispatch-rules$/);
+    if(dispatchRules&&req.method==='GET')return send(res,200,all(`SELECT r.*,p.name primary_driver_name,w.name watcher_driver_name,z.name zone_name FROM territory_dispatch_rules r JOIN drivers p ON p.id=r.primary_driver_id LEFT JOIN drivers w ON w.id=r.watcher_driver_id LEFT JOIN delivery_zones z ON z.id=r.zone_id WHERE r.territory_id=? ORDER BY r.active DESC,z.sort_order`,decodeURIComponent(dispatchRules[1])));
+    if(dispatchRules&&req.method==='POST'){
+      const tid=decodeURIComponent(dispatchRules[1]),b=await bodyJson(req),primary=text(b.primary_driver_id),watcher=text(b.watcher_driver_id),zone=text(b.zone_id);if(!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',primary,tid))throw new Error('Choose a driver who belongs to this area.');if(watcher&&!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',watcher,tid))throw new Error('Choose an oversight driver who belongs to this area.');if(zone&&!one('SELECT 1 FROM delivery_zones WHERE id=? AND territory_id=?',zone,tid))throw new Error('Choose a delivery area from this territory.');const rid=text(b.id)||id(),stamp=now();run(`INSERT INTO territory_dispatch_rules(id,territory_id,zone_id,primary_driver_id,watcher_driver_id,require_verified_location,active,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?,?) ON CONFLICT(id) DO UPDATE SET zone_id=excluded.zone_id,primary_driver_id=excluded.primary_driver_id,watcher_driver_id=excluded.watcher_driver_id,active=excluded.active,updated_at=excluded.updated_at`,rid,tid,zone||null,primary,watcher||null,bool(b.active??true),stamp,stamp);return send(res,200,{ok:true,id:rid});
+    }
+    const membershipsRoute=url.pathname.match(/^\/api\/admin\/drivers\/([^/]+)\/memberships$/);
+    if(membershipsRoute&&req.method==='GET')return send(res,200,finalOperations.memberships(decodeURIComponent(membershipsRoute[1])));
+    if(membershipsRoute&&req.method==='PUT'){const driverId=decodeURIComponent(membershipsRoute[1]),b=await bodyJson(req),rows=Array.isArray(b.memberships)?b.memberships:[],stamp=now();db.transaction(()=>{run('UPDATE driver_territory_memberships SET active=0,updated_at=? WHERE driver_id=?',stamp,driverId);for(const m of rows){if(!one('SELECT 1 FROM territories WHERE id=? AND active=1 AND archived=0',text(m.territory_id)))throw new Error('Choose an active area.');run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,created_at,updated_at) VALUES(?,?,?,1,?,?) ON CONFLICT(driver_id,territory_id) DO UPDATE SET role=excluded.role,active=1,updated_at=excluded.updated_at`,driverId,text(m.territory_id),['driver','supervisor'].includes(text(m.role))?text(m.role):'driver',stamp,stamp);}})();return send(res,200,finalOperations.memberships(driverId));}
+    const scheduleInfo=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/schedule$/);
+    if(scheduleInfo&&req.method==='GET')return send(res,200,{...finalOperations.scheduleConfig(decodeURIComponent(scheduleInfo[1])),hours:all('SELECT * FROM territory_weekly_hours WHERE territory_id=? ORDER BY weekday,open_minute',decodeURIComponent(scheduleInfo[1]))});
+    if(scheduleInfo&&req.method==='PUT')return send(res,200,finalOperations.saveSchedule(decodeURIComponent(scheduleInfo[1]),await bodyJson(req)));
+
+    if(url.pathname==='/api/admin/operations/free-cans'&&req.method==='POST')return send(res,201,finalOperations.adminFree(await bodyJson(req)));
+    const personalRate=url.pathname.match(/^\/api\/admin\/drivers\/([^/]+)\/personal-use-rate$/);
+    if(personalRate&&req.method==='PUT')return send(res,200,finalOperations.updatePersonalRate({role:'admin'},decodeURIComponent(personalRate[1]),await bodyJson(req)));
+    const finalTotal=url.pathname.match(/^\/api\/admin\/orders\/([^/]+)\/final-total$/);
+    if(finalTotal&&req.method==='POST')return send(res,200,finalOperations.setFinalTotal(decodeURIComponent(finalTotal[1]),await bodyJson(req),'admin'));
 
     // Products and inventory
     if(url.pathname==='/api/admin/products'&&req.method==='POST'){
@@ -1314,10 +1378,9 @@ const server=http.createServer(async(req,res)=>{
     const prodPermanent=url.pathname.match(/^\/api\/admin\/products\/([^/]+)\/permanent$/);
     if(prodPermanent&&req.method==='DELETE'){
       const pid=decodeURIComponent(prodPermanent[1]);
+      const history=int(one(`SELECT (SELECT COUNT(*) FROM order_items WHERE product_id=?)+(SELECT COUNT(*) FROM order_adjustments WHERE product_id=?)+(SELECT COUNT(*) FROM inventory_movements WHERE product_id=?)+(SELECT COUNT(*) FROM operational_action_lines WHERE product_id=?) c`,pid,pid,pid,pid)?.c);
+      if(history)throw new Error('This product has stock or order history and cannot be permanently deleted. Archive it instead.');
       db.transaction(()=>{
-        run('UPDATE order_items SET product_id=NULL WHERE product_id=?',pid);
-        run('UPDATE order_adjustments SET product_id=NULL WHERE product_id=?',pid);
-        run('DELETE FROM inventory_movements WHERE product_id=?',pid);
         run('DELETE FROM territory_products WHERE product_id=?',pid);
         run('DELETE FROM products WHERE id=?',pid);
       })();
@@ -1361,8 +1424,10 @@ const server=http.createServer(async(req,res)=>{
       const oid=decodeURIComponent(ord[1]),b=await bodyJson(req),o=one('SELECT * FROM orders WHERE id=?',oid);if(!o)return send(res,404,{error:'Not found'});
       if(text(b.status)==='cancelled') return send(res,200,cancelOrder(oid,{role:'admin',note:text(b.note)}));
       const oldStatus=o.status; const status=text(b.status)||o.status;if(!ORDER_STATUSES.has(status))throw new Error('Invalid order status');
+      if(status==='completed'&&o.final_total_pending)throw new Error("Final delivery total hasn't been confirmed yet.");
       const driver=b.assigned_driver_id===undefined?o.assigned_driver_id:(b.assigned_driver_id||null);
-      if(driver&&!one('SELECT id FROM drivers WHERE id=? AND territory_id=? AND active=1 AND archived=0',driver,o.territory_id))throw new Error('Choose an active driver from this city');
+      if(driver&&!one(`SELECT d.id FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id
+        WHERE d.id=? AND m.territory_id=? AND m.active=1 AND d.active=1 AND d.archived=0`,driver,o.territory_id))throw new Error('Choose an active driver from this city');
       let delivery=b.delivery_fee_cents!=null?Math.max(0,int(b.delivery_fee_cents)):(b.delivery_fee!=null?Math.max(0,cents(b.delivery_fee)):int(o.delivery_fee_cents));
       const pre=int(o.subtotal_cents)+delivery; const total=roundDown(pre,int(setting('round_down_to_cents','500'),500)); const discount=Math.max(0,pre-total);
       const completed=status==='completed'?(o.completed_at||now()):(status==='cancelled'?null:o.completed_at);
@@ -1433,7 +1498,10 @@ const server=http.createServer(async(req,res)=>{
       const tid=text(url.searchParams.get('territory_id'));
       const terr=tid?one('SELECT id,name,slug FROM territories WHERE id=? AND active=1 AND archived=0',tid):publicTerritory(text(url.searchParams.get('territory_slug'))||'victoria');
       if(!terr)return send(res,404,{error:'City unavailable'});
-      return send(res,200,{territory:terr,drivers:all(`SELECT id,name,role FROM drivers WHERE territory_id=? AND active=1 AND archived=0 ORDER BY CASE WHEN role='operations_admin' THEN 0 ELSE 1 END,name`,terr.id)});
+      return send(res,200,{territory:terr,drivers:all(`SELECT d.id,d.name,d.role,m.role membership_role FROM drivers d
+        JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1
+        WHERE d.active=1 AND d.archived=0
+        ORDER BY CASE WHEN m.role='supervisor' OR d.role='operations_admin' THEN 0 ELSE 1 END,d.name`,terr.id)});
     }
 
     if(url.pathname==='/api/driver/login'&&req.method==='POST'){
@@ -1450,9 +1518,13 @@ const server=http.createServer(async(req,res)=>{
       if(url.pathname==='/api/driver/bootstrap'&&req.method==='GET'){
         const recentCutoff=new Date(Date.now()-12*60*60*1000).toISOString(),archiveCutoff=new Date(Date.now()-15*24*60*60*1000).toISOString();
         const selectOrder=`SELECT o.*,(SELECT COALESCE(SUM(qty),0) FROM order_items i WHERE i.order_id=o.id) cans FROM orders o`;
-        const orders=all(`${selectOrder} WHERE o.assigned_driver_id=? AND o.driver_archived_at IS NULL AND (o.status NOT IN ('cancelled','completed') OR (o.status='completed' AND COALESCE(o.driver_restored_at,o.completed_at)>=?) OR (o.status='cancelled' AND COALESCE(o.driver_restored_at,o.cancelled_at)>=?)) ORDER BY CASE WHEN o.status IN ('new','assigned') THEN 0 WHEN o.status='acknowledged' THEN 1 WHEN o.status='picked_up' THEN 2 WHEN o.status='on_the_way' THEN 3 ELSE 4 END,o.created_at DESC LIMIT 150`,driver.id,recentCutoff,recentCutoff);
+        const orders=all(`${selectOrder} WHERE (o.assigned_driver_id=? OR EXISTS(SELECT 1 FROM order_watchers w WHERE w.order_id=o.id AND w.driver_id=?)) AND o.driver_archived_at IS NULL AND (o.status NOT IN ('cancelled','completed') OR (o.status='completed' AND COALESCE(o.driver_restored_at,o.completed_at)>=?) OR (o.status='cancelled' AND COALESCE(o.driver_restored_at,o.cancelled_at)>=?)) ORDER BY CASE WHEN o.status IN ('new','assigned') THEN 0 WHEN o.status='acknowledged' THEN 1 WHEN o.status='picked_up' THEN 2 WHEN o.status='on_the_way' THEN 3 ELSE 4 END,o.created_at DESC LIMIT 150`,driver.id,driver.id,recentCutoff,recentCutoff);
         const archived_orders=all(`${selectOrder} WHERE o.assigned_driver_id=? AND o.driver_archived_at IS NOT NULL AND o.driver_archived_at>=? ORDER BY o.driver_archived_at DESC LIMIT 150`,driver.id,archiveCutoff);
-        return send(res,200,{driver,territory:one('SELECT * FROM territories WHERE id=?',driver.territory_id),products:all(`SELECT p.id,p.brand,p.flavor,p.strength,tp.inventory,tp.listed FROM products p JOIN territory_products tp ON tp.product_id=p.id WHERE tp.territory_id=? AND p.active=1 AND p.archived=0 ORDER BY p.brand,p.flavor`,driver.territory_id),orders,archived_orders,history_policy:{terminal_hours:12,archive_days:15}});
+        const memberships=finalOperations.memberships(driver.id),territoryIds=memberships.map(x=>x.territory_id),marks=territoryIds.map(()=>'?').join(',');
+        const products=territoryIds.length?all(`SELECT p.id,p.brand,p.flavor,p.strength,tp.territory_id,tp.inventory,tp.listed FROM products p JOIN territory_products tp ON tp.product_id=p.id WHERE tp.territory_id IN (${marks}) AND p.active=1 AND p.archived=0 ORDER BY p.brand,p.flavor`,...territoryIds):[];
+        const zones=territoryIds.length?all(`SELECT id,territory_id,name,fee_cents,fee,free_at_qty FROM delivery_zones WHERE territory_id IN (${marks}) AND active=1 ORDER BY sort_order,name`,...territoryIds):[];
+        const territory_drivers=territoryIds.length?all(`SELECT d.id,d.name,m.territory_id,m.role membership_role FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id WHERE m.territory_id IN (${marks}) AND m.active=1 AND d.active=1 AND d.archived=0 ORDER BY d.name`,...territoryIds):[];
+        return send(res,200,{driver,territory:one('SELECT * FROM territories WHERE id=?',driver.territory_id),memberships,territory_drivers,products,zones,orders,archived_orders,history_policy:{terminal_hours:12,archive_days:15}});
       }
       if(url.pathname==='/api/driver/push-config'&&req.method==='GET'){
         return send(res,200,{
@@ -1495,12 +1567,23 @@ const server=http.createServer(async(req,res)=>{
       }
 
       if(url.pathname==='/api/driver/quick-sale'&&req.method==='POST'){
-        const b=await bodyJson(req); b.territory_id=driver.territory_id;b.assigned_driver_id=driver.id; const o=createOrderCore(b,{source:text(b.source)||'driver_offsite',created_by_role:'driver',created_by_driver_id:driver.id,allow_unlisted:true,auto_complete:b.status!=='open'}); await sendBusinessNewOrderNotification(o.id); return send(res,201,o);
+        const b=await bodyJson(req); b.territory_id=text(b.territory_id)||driver.territory_id;if(!finalOperations.memberships(driver.id).some(x=>x.territory_id===b.territory_id))throw new Error('You do not have access to that area.');b.assigned_driver_id=driver.id; const o=createOrderCore(b,{source:text(b.source)||'driver_offsite',created_by_role:'driver',created_by_driver_id:driver.id,allow_unlisted:true,auto_complete:b.status!=='open'}); await sendBusinessNewOrderNotification(o.id); return send(res,201,o);
+      }
+      if(url.pathname==='/api/driver/actions/take-for-self'&&req.method==='POST')return send(res,201,finalOperations.takeForSelf(driver,await bodyJson(req)));
+      if(url.pathname==='/api/driver/personal-use-rate'&&req.method==='PUT')return send(res,200,finalOperations.updatePersonalRate({role:'driver',id:driver.id},driver.id,await bodyJson(req)));
+      const driverFree=url.pathname.match(/^\/api\/driver\/orders\/([^/]+)\/free-can$/);
+      if(driverFree&&req.method==='POST')return send(res,201,finalOperations.promotionalCan(driver,decodeURIComponent(driverFree[1]),await bodyJson(req)));
+      const driverSwap=url.pathname.match(/^\/api\/driver\/orders\/([^/]+)\/swap$/);
+      if(driverSwap&&req.method==='POST')return send(res,201,finalOperations.swap(driver,decodeURIComponent(driverSwap[1]),await bodyJson(req)));
+      const driverTotal=url.pathname.match(/^\/api\/driver\/orders\/([^/]+)\/final-total$/);
+      if(driverTotal&&req.method==='POST'){
+        const oid=decodeURIComponent(driverTotal[1]),order=one('SELECT * FROM orders WHERE id=?',oid);if(!order||!finalOperations.canAccessOrder(driver.id,order))return send(res,404,{error:'Not found'});
+        return send(res,200,finalOperations.setFinalTotal(oid,await bodyJson(req),'driver',driver.id));
       }
       const dord=url.pathname.match(/^\/api\/driver\/orders\/([^/]+)$/);
-      if(dord&&req.method==='GET'){ const o=orderFull(decodeURIComponent(dord[1]));if(!o||o.assigned_driver_id!==driver.id)return send(res,404,{error:'Not found'});return send(res,200,o); }
+      if(dord&&req.method==='GET'){ const o=orderFull(decodeURIComponent(dord[1]));if(!o||!finalOperations.canAccessOrder(driver.id,o))return send(res,404,{error:'Not found'});return send(res,200,o); }
       if(dord&&req.method==='PUT'){
-        const oid=decodeURIComponent(dord[1]),o=one('SELECT * FROM orders WHERE id=?',oid);if(!o||o.assigned_driver_id!==driver.id)return send(res,404,{error:'Not found'}); const b=await bodyJson(req);
+        const oid=decodeURIComponent(dord[1]),o=one('SELECT * FROM orders WHERE id=?',oid);if(!o||!finalOperations.canAccessOrder(driver.id,o))return send(res,404,{error:'Not found'}); const b=await bodyJson(req);
         const action=text(b.action);
         if(action==='archive'){
           const t=now();run('UPDATE orders SET driver_archived_at=?,driver_restored_at=NULL,updated_at=? WHERE id=?',t,t,oid);addOrderEvent(oid,'driver_archive','Driver moved order to Archive / Trash',{}, {created_by_role:'driver',created_by_driver_id:driver.id});return send(res,200,orderFull(oid));
@@ -1510,11 +1593,21 @@ const server=http.createServer(async(req,res)=>{
           if(new Date(o.driver_archived_at).getTime()<Date.now()-15*24*60*60*1000)throw new Error('This archived order is past the 15-day restore window');
           const t=now();run('UPDATE orders SET driver_archived_at=NULL,driver_restored_at=?,updated_at=? WHERE id=?',t,t,oid);addOrderEvent(oid,'driver_restore','Driver restored order from Archive / Trash',{}, {created_by_role:'driver',created_by_driver_id:driver.id});return send(res,200,orderFull(oid));
         }
+        if(Object.prototype.hasOwnProperty.call(b,'assigned_driver_id')){
+          const membership=one('SELECT role FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',driver.id,o.territory_id);
+          if(driver.role!=='operations_admin'&&membership?.role!=='supervisor')throw new Error('Only an authorized area supervisor can reassign this order.');
+          const target=text(b.assigned_driver_id);if(!target)throw new Error('Choose the delivery driver.');
+          if(!one(`SELECT d.id FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id WHERE d.id=? AND m.territory_id=? AND m.active=1 AND d.active=1 AND d.archived=0`,target,o.territory_id))throw new Error('Choose an active driver from this delivery area.');
+          run('UPDATE orders SET assigned_driver_id=?,status=CASE WHEN status=\'new\' THEN \'assigned\' ELSE status END,updated_at=? WHERE id=?',target,now(),oid);
+          addOrderEvent(oid,'driver_reassigned',`Delivery reassigned to ${one('SELECT name FROM drivers WHERE id=?',target)?.name||'driver'}`,{previous_driver_id:o.assigned_driver_id,driver_id:target},{attention:1,created_by_role:'driver',created_by_driver_id:driver.id,visible_to_customer:true});
+          return send(res,200,orderFull(oid));
+        }
         if(text(b.status)==='cancelled'){
           if(['completed','cancelled'].includes(o.status))throw new Error('Completed or already-cancelled orders cannot be cancelled by the driver');
           return send(res,200,cancelOrder(oid,{role:'driver',driver_id:driver.id,note:text(b.note)||'Driver cancelled order'}));
         }
         const status=text(b.status)||o.status;if(!['acknowledged','picked_up','on_the_way','completed'].includes(status))throw new Error('Invalid driver order status'); const completed=status==='completed'?(o.completed_at||now()):o.completed_at;
+        if(status==='completed'&&o.final_total_pending)throw new Error("Final delivery total hasn't been confirmed yet.");
         db.transaction(()=>{
           run('UPDATE orders SET status=?,completed_at=?,updated_at=? WHERE id=?',status,completed,now(),oid);
           addOrderEvent(oid,'driver_update',text(b.note)||`Driver changed status to ${status}`,{status},{attention:!['completed','acknowledged'].includes(status),created_by_role:'driver',created_by_driver_id:driver.id,visible_to_customer:true});

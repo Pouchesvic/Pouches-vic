@@ -8,6 +8,7 @@ RUN npm ci --omit=dev
 COPY server.js ./
 COPY sqlite.js ./
 COPY company-stock.js ./
+COPY final-operations.js ./
 COPY product-catalog.json ./
 COPY index.html ./
 COPY admin.html ./

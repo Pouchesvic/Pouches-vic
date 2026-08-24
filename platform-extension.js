@@ -266,6 +266,16 @@ function ensurePlatform() {
       FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_platform_order_notification_order ON platform_order_notification_deliveries(order_id,status);
+    CREATE TABLE IF NOT EXISTS platform_email_test_deliveries(
+      id TEXT PRIMARY KEY,
+      territory_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempted_at TEXT NOT NULL,
+      sent_at TEXT,
+      error TEXT DEFAULT '',
+      FOREIGN KEY(territory_id) REFERENCES territories(id) ON DELETE CASCADE
+    );
     CREATE TABLE IF NOT EXISTS platform_social_links(
       id TEXT PRIMARY KEY,
       platform TEXT NOT NULL DEFAULT 'custom',
@@ -305,6 +315,15 @@ function ensurePlatform() {
     );
   `);
   ensureColumn('platform_customers','archived_at','TEXT');
+  ensureColumn('platform_order_notification_recipients','territory_id','TEXT');
+  ensureColumn('platform_settlement_transactions','rate_cents','INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('platform_settlement_transactions','action_id','TEXT');
+  ensureColumn('platform_settlement_transactions','financial_effect',"TEXT NOT NULL DEFAULT ''");
+  ensureColumn('platform_settlement_periods','calculated_amount_cents','INTEGER');
+  ensureColumn('platform_settlement_periods','final_direction',"TEXT DEFAULT ''");
+  ensureColumn('platform_settlement_periods','final_amount_cents','INTEGER');
+  ensureColumn('platform_settlement_periods','adjustment_cents','INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('platform_settlement_periods','adjustment_reason',"TEXT DEFAULT ''");
 
   const t = now();
   if (!one("SELECT 1 FROM platform_businesses WHERE id='primary'")) {
@@ -319,9 +338,7 @@ function ensurePlatform() {
     }
   }
   if (!one("SELECT 1 FROM platform_display_config WHERE id='primary'")) run("INSERT INTO platform_display_config(id,show_social_links,updated_at) VALUES('primary',0,?)", t);
-  if (!one('SELECT 1 FROM platform_order_notification_recipients LIMIT 1')) {
-    run('INSERT INTO platform_order_notification_recipients(id,email,enabled,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)', id(), 'vicpouches@protonmail.com', 1, 0, t, t);
-  }
+  ensureVictoriaOrderRecipient();
   platformReady = true;
   try { backfillExistingCustomers(); } catch (e) { console.error('Platform customer backfill skipped:', e.message); }
   return true;
@@ -385,13 +402,22 @@ function getModules() {
 }
 function validEmail(v) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text(v).toLowerCase()); }
 function validHttpUrl(v) { try { const u = new URL(text(v)); return ['http:','https:'].includes(u.protocol) && !!u.hostname; } catch { return false; } }
+function ensureVictoriaOrderRecipient() {
+  const victoria=one("SELECT id FROM territories WHERE slug='victoria' AND active=1 AND archived=0");
+  if(!victoria)return null;
+  const fixed=one("SELECT id FROM platform_order_notification_recipients WHERE lower(email)='vicpouches@protonmail.com'");
+  const t=now();
+  if(fixed)run('UPDATE platform_order_notification_recipients SET territory_id=?,enabled=1,updated_at=? WHERE id=?',victoria.id,t,fixed.id);
+  else run('INSERT INTO platform_order_notification_recipients(id,email,enabled,sort_order,created_at,updated_at,territory_id) VALUES(?,?,?,?,?,?,?)',id(),'vicpouches@protonmail.com',1,0,t,t,victoria.id);
+  return one("SELECT * FROM platform_order_notification_recipients WHERE lower(email)='vicpouches@protonmail.com'");
+}
 function socialMasterEnabled() { return !!one("SELECT show_social_links FROM platform_display_config WHERE id='primary'")?.show_social_links; }
 function allSocialLinks() { return all('SELECT * FROM platform_social_links ORDER BY sort_order,id').map(x => ({ ...x, enabled: !!x.enabled })); }
 function publicSocialLinks() {
   if (!socialMasterEnabled()) return [];
   return allSocialLinks().filter(x => x.enabled && validHttpUrl(x.url)).map(x => ({ id:x.id, platform:x.platform, label:x.label, url:x.url }));
 }
-function notificationRecipients() { return all('SELECT * FROM platform_order_notification_recipients ORDER BY sort_order,email').map(x => ({ ...x, enabled: !!x.enabled })); }
+function notificationRecipients(territoryId = '') { const rows=territoryId?all('SELECT * FROM platform_order_notification_recipients WHERE territory_id=? ORDER BY sort_order,email',territoryId):all('SELECT * FROM platform_order_notification_recipients ORDER BY sort_order,email');return rows.map(x => ({ ...x, enabled: !!x.enabled })); }
 function platformConfig() { return { profile: getProfile(), modules: getModules(), integrations: { mapbox_public_token: tableExists('settings') ? (one("SELECT value FROM settings WHERE key='mapbox_public_token'")?.value || '') : '' }, show_social_links: socialMasterEnabled(), social_links: publicSocialLinks() }; }
 function adminPlatformConfig() { return { ...platformConfig(), notification_recipients: notificationRecipients(), social_links: allSocialLinks() }; }
 
@@ -503,11 +529,13 @@ function saveConfig(body) {
       if (seen.has(email)) throw new Error(`Duplicate notification email: ${email}`);
       seen.add(email);
       const rid = text(x.id) || id(), t = now(); keep.push(rid);
-      if (one('SELECT 1 FROM platform_order_notification_recipients WHERE id=?', rid)) run('UPDATE platform_order_notification_recipients SET email=?,enabled=?,sort_order=?,updated_at=? WHERE id=?', email,bool(x.enabled),index,t,rid);
-      else run('INSERT INTO platform_order_notification_recipients(id,email,enabled,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)', rid,email,bool(x.enabled),index,t,t);
+      const territoryId=text(x.territory_id);if(!one('SELECT 1 FROM territories WHERE id=? AND active=1 AND archived=0',territoryId))throw new Error(`Choose an active area for ${email}`);
+      if (one('SELECT 1 FROM platform_order_notification_recipients WHERE id=?', rid)) run('UPDATE platform_order_notification_recipients SET email=?,enabled=?,sort_order=?,updated_at=?,territory_id=? WHERE id=?', email,bool(x.enabled),index,t,territoryId,rid);
+      else run('INSERT INTO platform_order_notification_recipients(id,email,enabled,sort_order,created_at,updated_at,territory_id) VALUES(?,?,?,?,?,?,?)', rid,email,bool(x.enabled),index,t,t,territoryId);
     });
     const existing = all('SELECT id FROM platform_order_notification_recipients');
     for (const row of existing) if (!keep.includes(row.id)) run('DELETE FROM platform_order_notification_recipients WHERE id=?', row.id);
+    ensureVictoriaOrderRecipient();
   }
   if (Object.prototype.hasOwnProperty.call(body, 'show_social_links')) {
     run("UPDATE platform_display_config SET show_social_links=?,updated_at=? WHERE id='primary'", bool(body.show_social_links), now());
@@ -982,7 +1010,11 @@ function resolveDeliveryQuote(body) {
   let zone = null;
   if (override) zone = one('SELECT * FROM delivery_zones WHERE id=? AND territory_id=? AND active=1', override.zone_id, terr.id);
   if (!zone && body.lng != null && body.lat != null) zone = naturalZone(terr.id, body.lng, body.lat);
-  if (!zone) return { territory: { id: terr.id, name: terr.name, slug: terr.slug }, serviceable: false, zone: null, override: null };
+  if (!zone) {
+    let mismatch=null;
+    if(body.lng!=null&&body.lat!=null)for(const other of all('SELECT id,name,slug FROM territories WHERE id<>? AND active=1 AND archived=0 ORDER BY name',terr.id)){const found=naturalZone(other.id,body.lng,body.lat);if(found){mismatch={territory:other,zone:{id:found.id,name:found.name}};break;}}
+    return { territory: { id: terr.id, name: terr.name, slug: terr.slug }, serviceable: false, zone: null, override: null, territory_mismatch:mismatch };
+  }
   const baseFee = int(zone.fee_cents ?? Math.round(Number(zone.fee || 0) * 100));
   const feeOverride = override && override.fee_cents != null ? int(override.fee_cents) : null;
   const qty = Array.isArray(body.items) ? body.items.reduce((sum,x)=>sum+Math.max(0,int(x.qty ?? x.quantity ?? x.q)),0) : Math.max(0,int(body.qty));
@@ -990,14 +1022,14 @@ function resolveDeliveryQuote(body) {
   if (feeOverride != null) {
     finalFee = Math.max(0,feeOverride);
     if (finalFee < baseFee) reason = text(override.note) || 'VIP Customer Discount';
-  } else if (text(zone.name).toLowerCase() === 'green' && qty >= 10) {
+  } else if (zone.free_at_qty != null && qty >= int(zone.free_at_qty)) {
     finalFee = 0;
-    reason = '10+ Can Delivery Reward';
+    reason = `${int(zone.free_at_qty)}+ Can Delivery Reward`;
   }
   const savings = Math.max(0,baseFee-finalFee);
   return {
     territory: { id: terr.id, name: terr.name, slug: terr.slug }, serviceable: true,
-    zone: { id: zone.id, name: zone.name, color_label: zone.color_label, fee_cents: finalFee, base_fee_cents: baseFee, delivery_savings_cents: savings, delivery_discount_reason: savings ? reason : '', free_at_qty: text(zone.name).toLowerCase() === 'green' ? 10 : null },
+    zone: { id: zone.id, name: zone.name, color_label: zone.color_label, fee_cents: finalFee, base_fee_cents: baseFee, delivery_savings_cents: savings, delivery_discount_reason: savings ? reason : '', free_at_qty: zone.free_at_qty == null ? null : int(zone.free_at_qty) },
     override: override ? { id: override.id, applied: true, fee_cents: feeOverride, note: text(override.note) } : null
   };
 }
@@ -1015,19 +1047,18 @@ function corePublicPost(pathname, body) {
 }
 async function createPublicPlatformOrder(body) {
   if (!body.age_acknowledged) throw new Error('ID / age acknowledgement is required');
-  const quote = resolveDeliveryQuote(body);
-  if (!quote.serviceable) throw new Error('That address is outside the current delivery area');
-  const trusted = { ...body, zone_id: quote.zone.id };
+  const manual=bool(body.manual_location),quote=manual?null:resolveDeliveryQuote(body);
+  if (!manual&&!quote.serviceable){if(quote.territory_mismatch)throw new Error(`This address is in ${quote.territory_mismatch.territory.name}. Switch delivery areas or go back.`);throw new Error('That address is outside the current delivery area');}
+  const trusted = { ...body, zone_id: manual?null:quote.zone.id };
   delete trusted.delivery_fee; delete trusted.delivery_fee_cents;
-  if (body.lat != null && body.lng != null) { trusted.address_lat = Number(body.lat); trusted.address_lng = Number(body.lng); }
-  trusted.delivery_fee_cents = int(quote.zone.fee_cents);
-  trusted.delivery_discount_reason = text(quote.zone.delivery_discount_reason);
-  if (quote.override?.applied) trusted.zone_override_note = `Saved delivery exception${quote.override.note ? ': '+quote.override.note : ''}`;
+  if (!manual&&body.lat != null && body.lng != null) { trusted.address_lat = Number(body.lat); trusted.address_lng = Number(body.lng); }
+  if(!manual){trusted.delivery_fee_cents = int(quote.zone.fee_cents);trusted.delivery_discount_reason = text(quote.zone.delivery_discount_reason);}
+  if (!manual&&quote.override?.applied) trusted.zone_override_note = `Saved delivery exception${quote.override.note ? ': '+quote.override.note : ''}`;
   const core = await corePublicPost('/api/public/orders', trusted);
   if (core.status < 200 || core.status >= 300) return core;
   const linked = linkOrderToCustomer(core.body.id);
   if (text(body.fulfillment_type) && one('SELECT 1 FROM orders WHERE id=?', core.body.id)) run('UPDATE orders SET fulfillment_type=?,updated_at=? WHERE id=?', text(body.fulfillment_type), now(), core.body.id);
-  return { status: core.status, body: { ...core.body, customer_status: linked ? { returning_customer: linked.returning_customer, previous_order_count: linked.previous_order_count, order_count: linked.order_count } : null, delivery_override_applied: !!quote.override?.applied } };
+  return { status: core.status, body: { ...core.body, customer_status: linked ? { returning_customer: linked.returning_customer, previous_order_count: linked.previous_order_count, order_count: linked.order_count } : null, delivery_override_applied: !!quote?.override?.applied } };
 }
 function saveZoneOverride(territoryId, b) {
   const type = ['address','street','customer'].includes(text(b.match_type)) ? text(b.match_type) : 'address';
@@ -1111,14 +1142,19 @@ function saveProductRating(productId, b) {
 function businessOrderNotificationHtml(order) {
   const items = all('SELECT * FROM order_items WHERE order_id=? ORDER BY rowid', order.id);
   const money = cents => new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format((Number(cents)||0)/100);
+  const timezone=text(order.territory_timezone_snapshot)||'America/Vancouver',today=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()).split('/').reverse().join('-');
+  const requested=text(order.requested_delivery_date),future=requested&&requested>today;
+  const requestedDate=requested?new Intl.DateTimeFormat('en-CA',{timeZone:'UTC',weekday:'long',month:'long',day:'numeric'}).format(new Date(`${requested}T12:00:00Z`)):'';
+  const flags=[future?`<div style="background:#171717;color:#fff;padding:12px 14px;margin:8px 0;font-weight:bold">FUTURE DELIVERY<br><span style="font-weight:normal">${escapeHtml(requestedDate)}${order.requested_window_label?` • ${escapeHtml(order.requested_window_label)}`:''}</span></div>`:'',order.schedule_type==='outside_hours'?`<div style="background:#ffcf33;padding:12px 14px;margin:8px 0;font-weight:bold">OUTSIDE-HOURS REQUEST — CONTACT CUSTOMER<br><span style="font-weight:normal">${escapeHtml(order.outside_hours_message)}</span></div>`:'',order.manual_location?`<div style="background:#ffcf33;padding:12px 14px;margin:8px 0;font-weight:bold">LOCATION NEEDS CONFIRMATION<br><span style="font-weight:normal">${escapeHtml(order.meeting_instructions)}</span></div>`:''].join('');
   const itemRows = items.map(x => `<tr><td style="padding:8px 0;border-bottom:1px solid #ddd">${int(x.qty)} × ${escapeHtml(x.brand_snapshot)} ${escapeHtml(x.product_name_snapshot)}${x.strength_snapshot?` • ${escapeHtml(displayStrength(x.strength_snapshot))}`:''}</td><td style="padding:8px 0;border-bottom:1px solid #ddd;text-align:right">${money(x.line_total_cents)}</td></tr>`).join('');
-  return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#171717"><div style="max-width:640px;margin:auto"><h1>New order #${escapeHtml(order.order_no)}</h1><p><b>Status:</b> ${escapeHtml(order.status)}<br><b>Placed:</b> ${escapeHtml(order.created_at)}<br><b>Source:</b> ${escapeHtml(order.source)}</p><h2>Customer</h2><p><b>${escapeHtml(order.customer_name||'Customer')}</b><br>${escapeHtml(order.customer_phone||'')}${order.customer_email?`<br>${escapeHtml(order.customer_email)}`:''}</p><p><b>Delivery address</b><br>${escapeHtml(order.address||'')}</p>${order.delivery_notes?`<p><b>Delivery instructions</b><br>${escapeHtml(order.delivery_notes)}</p>`:''}${order.delivery_window_label?`<p><b>Delivery window:</b> ${escapeHtml(order.delivery_window_label)}</p>`:''}<table style="width:100%;border-collapse:collapse">${itemRows}<tr><td style="padding-top:12px">Products</td><td style="padding-top:12px;text-align:right">${money(order.subtotal_cents)}</td></tr><tr><td>Delivery${order.zone_name_snapshot?` • ${escapeHtml(order.zone_name_snapshot)}`:''}</td><td style="text-align:right">${money(order.delivery_fee_cents)}</td></tr>${int(order.customer_discount_cents)>0?`<tr><td>Discount</td><td style="text-align:right">−${money(order.customer_discount_cents)}</td></tr>`:''}<tr><td style="font-size:18px;font-weight:bold;padding-top:9px">TOTAL</td><td style="font-size:18px;font-weight:bold;padding-top:9px;text-align:right">${money(order.total_cents)}</td></tr></table><p><b>Payment:</b> ${escapeHtml(order.payment_method||'Not specified')}${order.payment_note?`<br>${escapeHtml(order.payment_note)}`:''}</p><p><a href="${PUBLIC_BASE_URL}/admin">Open Control Room</a></p></div></body></html>`;
+  return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#171717"><div style="max-width:640px;margin:auto"><h1>New order #${escapeHtml(order.order_no)}</h1>${flags}<p><b>Requested delivery:</b> ${escapeHtml(requestedDate||'Not recorded')}${order.requested_window_label?` • ${escapeHtml(order.requested_window_label)}`:''}</p><h2>Customer</h2><p style="font-size:18px"><b>${escapeHtml(order.customer_name||'Customer')}</b><br>${escapeHtml(order.customer_phone||'')}${order.address?`<br>${escapeHtml(order.address)}`:''}${order.customer_email?`<br>${escapeHtml(order.customer_email)}`:''}</p>${order.delivery_notes?`<p><b>Delivery Notes</b><br>${escapeHtml(order.delivery_notes)}</p>`:''}<table style="width:100%;border-collapse:collapse">${itemRows}<tr><td style="padding-top:12px">Products</td><td style="padding-top:12px;text-align:right">${money(order.subtotal_cents)}</td></tr><tr><td>Delivery${order.zone_name_snapshot?` • ${escapeHtml(order.zone_name_snapshot)}`:''}</td><td style="text-align:right">${order.final_total_pending?'To be confirmed':money(order.delivery_fee_cents)}</td></tr>${!order.final_total_pending&&int(order.customer_discount_cents)>0?`<tr><td>Customer Appreciation</td><td style="text-align:right">−${money(order.customer_discount_cents)}</td></tr>`:''}<tr><td style="font-size:18px;font-weight:bold;padding-top:9px">FINAL TOTAL</td><td style="font-size:18px;font-weight:bold;padding-top:9px;text-align:right">${order.final_total_pending?'To be confirmed':money(order.total_cents)}</td></tr></table><p><b>Payment:</b> ${escapeHtml(order.payment_method||'Not specified')}${order.payment_note?`<br>${escapeHtml(order.payment_note)}`:''}</p><p><a href="${PUBLIC_BASE_URL}/admin">Open Control Room</a></p></div></body></html>`;
 }
+function businessOrderSubject(order){const timezone=text(order.territory_timezone_snapshot)||'America/Vancouver',parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value])),today=`${parts.year}-${parts.month}-${parts.day}`;return order.requested_delivery_date>today?`NEW FUTURE ORDER — #${order.order_no}`:`New PouchesVic order #${order.order_no}`;}
 async function sendBusinessNewOrderNotifications(orderId) {
   if (!ensurePlatform()) return { sent:0, skipped:0 };
   const order = one('SELECT * FROM orders WHERE id=?', orderId);
   if (!order) return { sent:0, skipped:0 };
-  const recipients = notificationRecipients().filter(x => x.enabled && validEmail(x.email));
+  const recipients = notificationRecipients(order.territory_id).filter(x => x.enabled && validEmail(x.email));
   let sent = 0, skipped = 0;
   for (const recipient of recipients) {
     const deliveryId = id(), attempted = now();
@@ -1129,7 +1165,7 @@ async function sendBusinessNewOrderNotifications(orderId) {
       continue;
     }
     try {
-      const response = await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:ORDER_EMAIL_FROM,to:[recipient.email],subject:`New PouchesVic order #${order.order_no}`,html:businessOrderNotificationHtml(order),...(ORDER_EMAIL_REPLY_TO?{reply_to:ORDER_EMAIL_REPLY_TO}:{})})});
+      const response = await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:ORDER_EMAIL_FROM,to:[recipient.email],subject:businessOrderSubject(order),html:businessOrderNotificationHtml(order),...(ORDER_EMAIL_REPLY_TO?{reply_to:ORDER_EMAIL_REPLY_TO}:{})})});
       if (!response.ok) throw new Error(`Email provider returned ${response.status}: ${(await response.text()).slice(0,300)}`);
       run("UPDATE platform_order_notification_deliveries SET status='sent',sent_at=?,error='' WHERE id=?", now(), deliveryId); sent++;
     } catch (e) {
@@ -1140,6 +1176,19 @@ async function sendBusinessNewOrderNotifications(orderId) {
   return { sent, skipped };
 }
 
+function emailDeliveryStatus(territoryId){
+  const territory=one('SELECT id,name,slug FROM territories WHERE id=?',territoryId);if(!territory)throw new Error('Delivery area not found.');
+  return {territory,configured:!!(RESEND_API_KEY&&ORDER_EMAIL_FROM),from:ORDER_EMAIL_FROM||'',recipients:notificationRecipients(territoryId),recent_orders:all(`SELECT d.*,o.order_no,o.created_at order_created_at FROM platform_order_notification_deliveries d JOIN orders o ON o.id=d.order_id WHERE o.territory_id=? ORDER BY d.attempted_at DESC LIMIT 20`,territoryId),recent_tests:all('SELECT * FROM platform_email_test_deliveries WHERE territory_id=? ORDER BY attempted_at DESC LIMIT 10',territoryId)};
+}
+async function sendVictoriaTestEmail(territoryId){
+  const territory=one('SELECT id,name,slug FROM territories WHERE id=?',territoryId);if(!territory)throw new Error('Delivery area not found.');
+  if(territory.slug!=='victoria')throw new Error('The Victoria business inbox test is available only for Victoria.');
+  const recipient=notificationRecipients(territoryId).find(x=>x.enabled&&x.email.toLowerCase()==='vicpouches@protonmail.com');if(!recipient)throw new Error('Victoria order email is disabled or not assigned to Victoria.');
+  const testId=id(),attempted=now();run("INSERT INTO platform_email_test_deliveries(id,territory_id,email,status,attempted_at,error) VALUES(?,?,?,?,?,'')",testId,territoryId,recipient.email,'pending',attempted);
+  if(!RESEND_API_KEY||!ORDER_EMAIL_FROM){const error='Email delivery is not configured: RESEND_API_KEY or ORDER_EMAIL_FROM is missing.';run("UPDATE platform_email_test_deliveries SET status='not_configured',error=? WHERE id=?",error,testId);return {ok:false,status:'not_configured',error};}
+  try{const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:ORDER_EMAIL_FROM,to:[recipient.email],subject:'PouchesVic Victoria test email',html:'<h1>PouchesVic Victoria email test</h1><p>If you received this, Victoria business-order email delivery is configured.</p>',...(ORDER_EMAIL_REPLY_TO?{reply_to:ORDER_EMAIL_REPLY_TO}:{})})});if(!response.ok)throw new Error(`Email provider returned ${response.status}: ${(await response.text()).slice(0,300)}`);run("UPDATE platform_email_test_deliveries SET status='sent',sent_at=?,error='' WHERE id=?",now(),testId);return {ok:true,status:'sent',email:recipient.email};}catch(e){const error=text(e.message).slice(0,500);run("UPDATE platform_email_test_deliveries SET status='failed',error=? WHERE id=?",error,testId);return {ok:false,status:'failed',error};}
+}
+
 // Core invokes this hook only from successful order-creation routes. Delivery rows make
 // repeated calls idempotent; later status/payment updates never invoke this hook.
 globalThis.pvNotifyNewOrder = sendBusinessNewOrderNotifications;
@@ -1148,8 +1197,8 @@ globalThis.pvNotifyNewOrder = sendBusinessNewOrderNotifications;
 function openSettlementPeriod(territoryId, driverId) {
   let p=one("SELECT * FROM platform_settlement_periods WHERE territory_id=? AND driver_id=? AND status='open' ORDER BY started_at DESC LIMIT 1",territoryId,driverId);
   if(p)return p;
-  const last=one("SELECT closed_at FROM platform_settlement_periods WHERE territory_id=? AND driver_id=? AND status='closed' ORDER BY closed_at DESC LIMIT 1",territoryId,driverId),t=now(),pid=id();
-  run("INSERT INTO platform_settlement_periods(id,territory_id,driver_id,started_at,status,created_at,updated_at) VALUES(?,?,?,?,'open',?,?)",pid,territoryId,driverId,last?.closed_at||t,t,t);
+  const last=one("SELECT closed_at FROM platform_settlement_periods WHERE territory_id=? AND driver_id=? AND status='closed' ORDER BY closed_at DESC LIMIT 1",territoryId,driverId),t=now(),pid=id(),first=last?null:one("SELECT MIN(completed_at) started_at FROM orders WHERE territory_id=? AND assigned_driver_id=? AND status='completed'",territoryId,driverId);
+  run("INSERT INTO platform_settlement_periods(id,territory_id,driver_id,started_at,status,created_at,updated_at) VALUES(?,?,?,?,'open',?,?)",pid,territoryId,driverId,last?.closed_at||first?.started_at||t,t,t);
   return one('SELECT * FROM platform_settlement_periods WHERE id=?',pid);
 }
 function platformOrderQty(orderId){return int(one('SELECT COALESCE(SUM(qty),0) q FROM order_items WHERE order_id=?',orderId)?.q);}
@@ -1176,19 +1225,21 @@ function settlementPeriodReport(period) {
   const pays=ids.length?all(`SELECT * FROM payments WHERE order_id IN (${ph}) AND status='received'`,...ids):[];
   const webQty=orders.filter(o=>o.source==='web').reduce((s,o)=>s+platformOrderQty(o.id),0),offsiteOrderQty=orders.filter(o=>o.source!=='web').reduce((s,o)=>s+platformOrderQty(o.id),0);
   const manualOffsite=tx.filter(x=>x.kind==='offsite_sale').reduce((s,x)=>s+int(x.qty),0),selfQty=tx.filter(x=>x.kind==='taken_for_self').reduce((s,x)=>s+int(x.qty),0),otherQty=tx.filter(x=>x.kind==='other_adjustment').reduce((s,x)=>s+int(x.qty),0);
-  const accountable=webQty+offsiteOrderQty+manualOffsite+selfQty+otherQty;
+  const accountable=webQty+offsiteOrderQty+manualOffsite+selfQty;
   const bossOrderShare=entries.filter(x=>x.source_driver_id===period.driver_id&&x.target_type==='boss').reduce((s,x)=>s+int(x.amount_cents),0);
   const bossRate=int(one("SELECT amount_cents FROM settlement_rules WHERE territory_id=? AND from_driver_id=? AND rule_type='per_can_driver_to_boss' AND active=1 AND archived=0 ORDER BY sort_order LIMIT 1",period.territory_id,period.driver_id)?.amount_cents);
-  const manualBossShare=(manualOffsite+selfQty+otherQty)*bossRate,bossShare=bossOrderShare+manualBossShare;
-  const confirmedBossPayments=pays.filter(x=>x.method==='etransfer'&&x.destination_type==='boss').reduce((s,x)=>s+int(x.amount_cents),0),manualBossCredits=tx.filter(x=>x.kind==='boss_credit').reduce((s,x)=>s+int(x.amount_cents),0),bossCredit=confirmedBossPayments+manualBossCredits;
-  const netBossDue=bossShare-bossCredit,sendToBoss=Math.max(0,netBossDue),bossOwesDriver=Math.max(0,-netBossDue),cashInHand=pays.filter(x=>x.method==='cash'&&x.destination_type==='driver'&&(!x.destination_driver_id||x.destination_driver_id===period.driver_id)).reduce((s,x)=>s+int(x.amount_cents),0)+tx.filter(x=>x.kind==='cash_collected').reduce((s,x)=>s+int(x.amount_cents),0);
+  const personalUseCharge=tx.filter(x=>x.kind==='taken_for_self').reduce((s,x)=>s+int(x.amount_cents),0),manualBossShare=manualOffsite*bossRate+personalUseCharge,bossShare=bossOrderShare+manualBossShare;
+  const confirmedBossPayments=pays.filter(x=>['boss','company'].includes(x.destination_type)).reduce((s,x)=>s+int(x.amount_cents),0),manualBossCredits=tx.filter(x=>x.kind==='boss_credit').reduce((s,x)=>s+int(x.amount_cents),0),bossCredit=confirmedBossPayments+manualBossCredits;
+  const calculatedNet=bossShare-bossCredit,adjustment=int(period.adjustment_cents),netBossDue=calculatedNet+adjustment,sendToBoss=Math.max(0,netBossDue),bossOwesDriver=Math.max(0,-netBossDue),cashInHand=pays.filter(x=>x.method==='cash'&&x.destination_type==='driver'&&(!x.destination_driver_id||x.destination_driver_id===period.driver_id)).reduce((s,x)=>s+int(x.amount_cents),0)+tx.filter(x=>x.kind==='cash_collected').reduce((s,x)=>s+int(x.amount_cents),0);
   const owesDrivers=entries.filter(x=>x.source_driver_id===period.driver_id&&x.target_type==='driver').reduce((s,x)=>s+int(x.amount_cents),0),receivesDrivers=entries.filter(x=>x.target_driver_id===period.driver_id&&x.source_driver_id!==period.driver_id).reduce((s,x)=>s+int(x.amount_cents),0),driverKeeps=cashInHand+bossOwesDriver+receivesDrivers-sendToBoss-owesDrivers;
   const deliveryFees=orders.reduce((s,o)=>s+int(o.delivery_fee_cents),0),tips=orders.reduce((s,o)=>s+int(o.tip_cents),0),driverTips=orders.filter(o=>o.tip_recipient_type!=='other_driver'&&(!o.tip_recipient_driver_id||o.tip_recipient_driver_id===period.driver_id)).reduce((s,o)=>s+int(o.tip_cents),0);
   const starting=period.starting_inventory==null?null:int(period.starting_inventory),expected=starting==null?null:starting-accountable,actual=period.actual_ending_inventory==null?null:int(period.actual_ending_inventory);
-  return {period:{...period},driver,closed:period.status==='closed',started_at:period.started_at,ended_at:end,sold_website:webQty,sold_off_website:offsiteOrderQty+manualOffsite,taken_for_self:selfQty,other_adjustments:otherQty,accountable_items:accountable,boss_rate_cents:bossRate,boss_share_before_credits_cents:bossShare,boss_credit_cents:bossCredit,send_to_boss_cents:sendToBoss,boss_owes_driver_cents:bossOwesDriver,cash_in_driver_hands_cents:cashInHand,driver_keeps_cents:driverKeeps,owes_other_drivers_cents:owesDrivers,receives_from_drivers_cents:receivesDrivers,delivery_fees_cents:deliveryFees,tips_cents:tips,driver_tips_cents:driverTips,starting_inventory:starting,expected_ending_inventory:expected,actual_ending_inventory:actual,variance:actual==null||expected==null?null:actual-expected,orders:orders.map(o=>({id:o.id,order_no:o.order_no,source:o.source,qty:platformOrderQty(o.id),completed_at:o.completed_at,total_cents:o.total_cents,delivery_fee_cents:o.delivery_fee_cents,tip_cents:o.tip_cents})),payments:pays,transactions:tx,entries};
+  return {period:{...period},driver,closed:period.status==='closed',started_at:period.started_at,ended_at:end,sold_website:webQty,sold_off_website:offsiteOrderQty+manualOffsite,taken_for_self:selfQty,personal_use_charge_cents:personalUseCharge,other_adjustments:otherQty,accountable_items:accountable,boss_rate_cents:bossRate,boss_share_before_credits_cents:bossShare,boss_credit_cents:bossCredit,calculated_net_cents:calculatedNet,adjustment_cents:adjustment,adjustment_reason:text(period.adjustment_reason),send_to_boss_cents:sendToBoss,boss_owes_driver_cents:bossOwesDriver,final_direction:netBossDue>=0?'send_to_company':'company_owes_driver',final_amount_cents:Math.abs(netBossDue),cash_in_driver_hands_cents:cashInHand,driver_keeps_cents:driverKeeps,owes_other_drivers_cents:owesDrivers,receives_from_drivers_cents:receivesDrivers,delivery_fees_cents:deliveryFees,tips_cents:tips,driver_tips_cents:driverTips,starting_inventory:starting,expected_ending_inventory:expected,actual_ending_inventory:actual,variance:actual==null||expected==null?null:actual-expected,orders:orders.map(o=>({id:o.id,order_no:o.order_no,source:o.source,qty:platformOrderQty(o.id),completed_at:o.completed_at,total_cents:o.total_cents,delivery_fee_cents:o.delivery_fee_cents,tip_cents:o.tip_cents})),payments:pays,transactions:tx,entries};
 }
-function settlementDashboard(territoryId){const drivers=all('SELECT id,name,role FROM drivers WHERE territory_id=? AND active=1 AND archived=0 ORDER BY name',territoryId);return{drivers:drivers.map(d=>settlementPeriodReport(openSettlementPeriod(territoryId,d.id))),history:all("SELECT p.*,d.name driver_name FROM platform_settlement_periods p JOIN drivers d ON d.id=p.driver_id WHERE p.territory_id=? AND p.status='closed' ORDER BY p.closed_at DESC LIMIT 100",territoryId).map(x=>({...x,snapshot:safeJson(x.snapshot_json,{})}))};}
-function closeSettlementPeriod(periodId,body){const p=one("SELECT * FROM platform_settlement_periods WHERE id=? AND status='open'",periodId);if(!p)throw new Error('Open settlement not found');if(body.actual_ending_inventory!==undefined)run('UPDATE platform_settlement_periods SET actual_ending_inventory=?,updated_at=? WHERE id=?',int(body.actual_ending_inventory),now(),periodId);const fresh=one('SELECT * FROM platform_settlement_periods WHERE id=?',periodId),snap=settlementPeriodReport(fresh),t=now();run("UPDATE platform_settlement_periods SET status='closed',ended_at=?,closed_at=?,snapshot_json=?,updated_at=? WHERE id=?",t,t,jsonText({...snap,closed:true}),t,periodId);run("INSERT INTO platform_settlement_audit(id,period_id,action,reason,snapshot_json,created_at) VALUES(?,?,'closed',?,?,?)",id(),periodId,text(body.reason)||'Settlement closed',jsonText(snap),t);return{...snap,closed:true};}
+function settlementDashboard(territoryId){const drivers=all(`SELECT d.id,d.name,d.role FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1 WHERE d.active=1 AND d.archived=0 ORDER BY d.name`,territoryId);return{drivers:drivers.map(d=>settlementPeriodReport(openSettlementPeriod(territoryId,d.id))),history:all("SELECT p.*,d.name driver_name FROM platform_settlement_periods p JOIN drivers d ON d.id=p.driver_id WHERE p.territory_id=? AND p.status='closed' ORDER BY p.closed_at DESC LIMIT 100",territoryId).map(x=>({...x,snapshot:safeJson(x.snapshot_json,{})}))};}
+function saveSettlementAdjustment(periodId,body){const p=one("SELECT * FROM platform_settlement_periods WHERE id=? AND status='open'",periodId);if(!p)throw new Error('Open settlement not found');const reason=text(body.reason);if(!reason)throw new Error('Tell us why the final settlement is changing.');const current=settlementPeriodReport(p),direction=text(body.final_direction),amount=Math.max(0,int(body.final_amount_cents));if(!['send_to_company','company_owes_driver'].includes(direction))throw new Error('Choose who owes the final settlement.');const finalNet=direction==='send_to_company'?amount:-amount,adjustment=finalNet-int(current.calculated_net_cents);run('UPDATE platform_settlement_periods SET calculated_amount_cents=?,final_direction=?,final_amount_cents=?,adjustment_cents=?,adjustment_reason=?,updated_at=? WHERE id=?',Math.abs(int(current.calculated_net_cents)),direction,amount,adjustment,reason,now(),periodId);run("INSERT INTO platform_settlement_audit(id,period_id,action,reason,snapshot_json,created_at) VALUES(?,?,'adjusted',?,?,?)",id(),periodId,reason,jsonText({calculated_net_cents:current.calculated_net_cents,final_direction:direction,final_amount_cents:amount,adjustment_cents:adjustment}),now());return settlementPeriodReport(one('SELECT * FROM platform_settlement_periods WHERE id=?',periodId));}
+function closeSettlementPeriod(periodId,body){const p=one("SELECT * FROM platform_settlement_periods WHERE id=? AND status='open'",periodId);if(!p)throw new Error('Open settlement not found');if(body.actual_ending_inventory!==undefined)run('UPDATE platform_settlement_periods SET actual_ending_inventory=?,updated_at=? WHERE id=?',int(body.actual_ending_inventory),now(),periodId);const fresh=one('SELECT * FROM platform_settlement_periods WHERE id=?',periodId),snap=settlementPeriodReport(fresh),t=now();run("UPDATE platform_settlement_periods SET status='closed',ended_at=?,closed_at=?,calculated_amount_cents=?,final_direction=?,final_amount_cents=?,snapshot_json=?,updated_at=? WHERE id=?",t,t,Math.abs(int(snap.calculated_net_cents)),snap.final_direction,snap.final_amount_cents,jsonText({...snap,closed:true}),t,periodId);run("INSERT INTO platform_settlement_audit(id,period_id,action,reason,snapshot_json,created_at) VALUES(?,?,'closed',?,?,?)",id(),periodId,text(body.reason)||'Settlement closed',jsonText(snap),t);return{...snap,closed:true};}
+function correctSettlementPeriod(periodId,body){const p=one("SELECT * FROM platform_settlement_periods WHERE id=? AND status='closed'",periodId);if(!p)throw new Error('Closed settlement not found');const reason=text(body.reason);if(!reason)throw new Error('A reason is required to correct a settled record.');const original=safeJson(p.snapshot_json,{}),corrected={...original,correction:{final_direction:text(body.final_direction)||original.final_direction,final_amount_cents:body.final_amount_cents==null?original.final_amount_cents:Math.max(0,int(body.final_amount_cents)),reason,corrected_at:now()}};run('INSERT INTO settlement_corrections(id,period_id,original_snapshot_json,corrected_snapshot_json,reason,created_at) VALUES(?,?,?,?,?,?)',id(),periodId,jsonText(original),jsonText(corrected),reason,now());run('UPDATE platform_settlement_periods SET snapshot_json=?,updated_at=? WHERE id=?',jsonText(corrected),now(),periodId);run("INSERT INTO platform_settlement_audit(id,period_id,action,reason,snapshot_json,created_at) VALUES(?,?,'corrected',?,?,?)",id(),periodId,reason,jsonText(corrected),now());return corrected;}
 function reopenSettlementPeriod(periodId,reason){const why=text(reason);if(!why)throw new Error('A reason is required to reopen a settlement');const p=one("SELECT * FROM platform_settlement_periods WHERE id=? AND status='closed'",periodId);if(!p)throw new Error('Closed settlement not found');if(one("SELECT 1 FROM platform_settlement_periods WHERE territory_id=? AND driver_id=? AND status='open'",p.territory_id,p.driver_id))throw new Error('Close the current open period before reopening this one');const t=now();run("UPDATE platform_settlement_periods SET status='open',ended_at=NULL,closed_at=NULL,reopened_at=?,updated_at=? WHERE id=?",t,t,periodId);run("INSERT INTO platform_settlement_audit(id,period_id,action,reason,snapshot_json,created_at) VALUES(?,?,'reopened',?,?,?)",id(),periodId,why,p.snapshot_json,t);return settlementPeriodReport(one('SELECT * FROM platform_settlement_periods WHERE id=?',periodId));}
 
 async function handlePlatform(req, res, url) {
@@ -1284,6 +1335,10 @@ async function handlePlatform(req, res, url) {
   if (url.pathname === '/api/admin/platform/config' && req.method === 'GET') return send(res, 200, adminPlatformConfig());
   if (url.pathname === '/api/admin/platform/config' && req.method === 'PUT') return send(res, 200, saveConfig(await readBody(req)));
   if (url.pathname === '/api/admin/platform/products' && req.method === 'GET') return send(res, 200, genericProductList());
+  const emailStatus=url.pathname.match(/^\/api\/admin\/platform\/territories\/([^/]+)\/email-status$/);
+  if(emailStatus&&req.method==='GET')return send(res,200,emailDeliveryStatus(decodeURIComponent(emailStatus[1])));
+  const emailTest=url.pathname.match(/^\/api\/admin\/platform\/territories\/([^/]+)\/email-test$/);
+  if(emailTest&&req.method==='POST')return send(res,200,await sendVictoriaTestEmail(decodeURIComponent(emailTest[1])));
 
   const terrStorefront = url.pathname.match(/^\/api\/admin\/platform\/territories\/([^/]+)\/storefront$/);
   if (terrStorefront && req.method === 'GET') {
@@ -1328,6 +1383,10 @@ async function handlePlatform(req, res, url) {
   }
   const settlementClose=url.pathname.match(/^\/api\/admin\/platform\/settlement-periods\/([^/]+)\/close$/);
   if(settlementClose&&req.method==='POST')return send(res,200,closeSettlementPeriod(decodeURIComponent(settlementClose[1]),await readBody(req)));
+  const settlementAdjustment=url.pathname.match(/^\/api\/admin\/platform\/settlement-periods\/([^/]+)\/adjustment$/);
+  if(settlementAdjustment&&req.method==='POST')return send(res,200,saveSettlementAdjustment(decodeURIComponent(settlementAdjustment[1]),await readBody(req)));
+  const settlementCorrection=url.pathname.match(/^\/api\/admin\/platform\/settlement-periods\/([^/]+)\/correction$/);
+  if(settlementCorrection&&req.method==='POST')return send(res,200,correctSettlementPeriod(decodeURIComponent(settlementCorrection[1]),await readBody(req)));
   const settlementReopen=url.pathname.match(/^\/api\/admin\/platform\/settlement-periods\/([^/]+)\/reopen$/);
   if(settlementReopen&&req.method==='POST'){const b=await readBody(req);return send(res,200,reopenSettlementPeriod(decodeURIComponent(settlementReopen[1]),b.reason));}
 

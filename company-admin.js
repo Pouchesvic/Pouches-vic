@@ -2,6 +2,7 @@
   'use strict';
 
   const E = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[ch]);
+  const humanStamp = value => value ? new Intl.DateTimeFormat('en-CA',{weekday:'long',month:'long',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(value)) : '';
   const strength = value => {
     const clean = String(value ?? '').trim().replace(/\s*mg\s*$/i, '');
     return clean ? `${clean} mg` : '';
@@ -85,6 +86,7 @@
 
   function productCard(product, territoryId) {
     const territory = territoryFor(product, territoryId);
+    if(product.archived)return `<div class="card" data-product-id="${E(product.id)}"><div class="cs-product"><div class="cs-image"><img src="${image(product)}" alt="${E(productName(product))}"></div><div><div class="cs-name">${E(product.brand)} ${E(product.flavor)}</div><div class="cs-edition">${E(strength(product.strength))}</div><span class="chip">ARCHIVED</span></div></div><div class="actions"><button class="btn" data-cs-action="archive">RESTORE TO PRODUCT LIST</button><button class="btn danger" data-cs-action="delete">DELETE PERMANENTLY</button></div></div>`;
     return `<div class="card" data-product-id="${E(product.id)}">
       <div class="cs-product"><div class="cs-image"><img src="${image(product)}" alt="${E(productName(product))}" onerror="this.onerror=null;this.src='/product-images/catalog-placeholder.webp'"></div><div>
         <div class="cs-name">${E(product.brand)} • ${E(product.flavor)}</div>
@@ -116,22 +118,17 @@
   async function renderProductLibrary() {
     installStyles();
     const host = q('view');
-    host.innerHTML = '<div class="card">Loading Product Library…</div>';
+    host.innerHTML = '<div class="card">Loading Archived Products…</div>';
     try {
       const data = await load();
       const territory = activeTerritory();
       if (!territory) throw new Error('Choose a territory first');
-      const list = matchProducts(data.catalog, territory.id);
-      const pages = Math.max(1, Math.ceil(list.length / state.pageSize));
-      state.page = Math.min(Math.max(1, state.page), pages);
-      const shown = list.slice((state.page - 1) * state.pageSize, state.page * state.pageSize);
-      host.innerHTML = `<div class="row"><div><div class="cs-title">Product Library</div><div class="muted">${data.catalog.length} reusable products • ${E(territory.name)} listing and availability</div></div><button id="csAddProduct" class="btn">ADD</button></div>
-        <div class="good"><b>Library is separate from storefront listing.</b><br>Every newly preloaded product starts at stock 0, hidden, and not featured. Receive and release stock before listing it live.</div>
-        ${filterToolbar(data.catalog, territory.id)}
-        ${shown.length ? shown.map(product => productCard(product, territory.id)).join('') : '<div class="cs-empty">No products match these filters.</div>'}
-        <div class="cs-pager"><button id="csPrev" class="btn ghost" ${state.page <= 1 ? 'disabled' : ''}>PREVIOUS</button><b>${state.page} / ${pages}</b><button id="csNext" class="btn ghost" ${state.page >= pages ? 'disabled' : ''}>NEXT</button></div>`;
+      const shown = data.catalog.filter(product=>product.archived);
+      host.innerHTML = `<div class="cs-title">Archived Products</div><div class="muted">Restore a product to return it to Stock as hidden.</div>
+        ${shown.length ? shown.map(product => productCard(product, territory.id)).join('') : '<div class="card muted">No archived products.</div>'}
+        <details class="advanced card"><summary>Advanced Product Setup</summary><button id="csAddProduct" class="btn ghost" style="width:100%;margin-top:10px">ADD A NEW HIDDEN PRODUCT</button></details>`;
       bindLibrary(host, territory.id);
-    } catch (error) { host.innerHTML = `<div class="warn"><b>Product Library could not load.</b><br>${E(error.message)}</div>`; }
+    } catch (error) { host.innerHTML = `<div class="warn"><b>Archived Products could not load.</b><br>${E(error.message)}</div>`; }
   }
 
   function openAddProduct() {
@@ -157,7 +154,9 @@
     if (action === 'edit') return openEdit(product, territoryId);
     if (action === 'history') return openHistory(product);
     if (action === 'archive') return toggleArchive(product);
+    if (action === 'delete') return permanentDelete(product);
   }
+  async function permanentDelete(product){if(!confirm(`Permanently delete ${productName(product)}? This will be blocked if business history still depends on it.`))return;try{await request(`/api/admin/products/${encodeURIComponent(product.id)}/permanent`,{method:'DELETE'});await refreshCurrent();}catch(e){alert(e.message)}}
 
   function actionTitle(product) { return `<h2>${E(product.brand)} ${E(product.flavor)}</h2><div class="muted">${E(strength(product.strength))}${product.series ? ` • ${E(product.series)}` : ''}</div>`; }
   function territoryOptions(selected = '') { return state.data.territories.map(row => `<option value="${E(row.id)}" ${row.id === selected ? 'selected' : ''}>${E(row.name)}</option>`).join(''); }
@@ -189,7 +188,7 @@
   async function toggleListing(product, territoryId) {
     const territory=territoryFor(product,territoryId);
     if (!territory) return;
-    if (!territory.listed && territory.customer_sellable <= 0 && !confirm('This product has no customer-sellable stock. List it live anyway? It will remain absent from the storefront until stock is released.')) return;
+    if (!territory.listed && territory.customer_sellable <= 0 && !confirm('This product has no customer stock yet. Add stock first?\n\nOK — GO BACK AND ADD STOCK\nCancel — NOT NOW')) return;
     await request(`/api/admin/territories/${encodeURIComponent(territoryId)}/product/${encodeURIComponent(product.id)}`,{method:'PUT',body:JSON.stringify({listed:!territory.listed,featured:territory.featured,local_price_override_cents:territory.local_price_override_cents,sort_order:0})});
     await refreshCurrent();
   }
@@ -197,9 +196,8 @@
   async function toggleArchive(product) {
     if (product.archived) await request(`/api/admin/products/${encodeURIComponent(product.id)}/restore`,{method:'POST',body:'{}'});
     else {
-      if (!confirm(`Archive ${productName(product)}? It will be hidden from every storefront but its stock and history remain.`)) return;
-      const territory=activeTerritory();
-      await request(`/api/admin/territories/${encodeURIComponent(territory.id)}/product/${encodeURIComponent(product.id)}`,{method:'DELETE'});
+      const stockArea=territoryFor(product,activeTerritory()?.id),physical=totalPhysical(stockArea);if (!confirm(`${physical?`There are ${physical} cans assigned to ${stockArea?.name}.\n\n`:''}Archive ${productName(product)}?\n\nOK — ARCHIVE ANYWAY\nCancel — GO BACK`)) return;
+      const territory=activeTerritory();await request(`/api/admin/territories/${encodeURIComponent(territory.id)}/product/${encodeURIComponent(product.id)}`,{method:'DELETE'});
     }
     await refreshCurrent();
   }
@@ -210,7 +208,7 @@
       <div class="two"><div class="field"><label>BRAND</label><input id="csEditBrand" value="${E(product.brand)}"></div><div class="field"><label>FLAVOUR / PRODUCT</label><input id="csEditFlavor" value="${E(product.flavor)}"></div></div>
       <div class="two"><div class="field"><label>STRENGTH (MG)</label><input id="csEditStrength" value="${E(String(product.strength||'').replace(/\s*mg\s*$/i,''))}"></div><div class="field"><label>SERIES / EDITION</label><input id="csEditSeries" value="${E(product.series||'')}"></div></div>
       <div class="field"><label>IMAGE PATH / URL</label><input id="csEditImage" value="${image(product)}"><div class="muted">Preloaded catalog images are local. A custom replacement is preserved on restart.</div></div><div class="field"><label>NOTES</label><textarea id="csEditNotes">${E(product.notes||'')}</textarea></div>
-      <div class="field"><label>DEFAULT STOCK MODE</label><select id="csEditPolicy"><option value="inherit" ${product.policy.source!=='product'?'selected':''}>Inherit system / brand default</option><option value="linked" ${product.policy.source==='product'&&product.policy.mode==='linked'?'selected':''}>Linked to Company</option><option value="independent" ${product.policy.source==='product'&&product.policy.mode==='independent'?'selected':''}>Independent</option></select><div class="muted">Changing this default does not move existing cans.</div></div>
+      <details class="advanced"><summary>Advanced stock setup</summary><div class="field"><label>DEFAULT STOCK MODE</label><select id="csEditPolicy"><option value="inherit" ${product.policy.source!=='product'?'selected':''}>Inherit system / brand default</option><option value="linked" ${product.policy.source==='product'&&product.policy.mode==='linked'?'selected':''}>Linked to Company</option><option value="independent" ${product.policy.source==='product'&&product.policy.mode==='independent'?'selected':''}>Independent</option></select><div class="muted">Changing this default does not move existing cans.</div></div></details>
       <div class="two"><div class="field"><label>LOCAL PRICE OVERRIDE</label><input id="csEditPrice" type="number" step=".01" value="${territory?.local_price_override_cents == null ? '' : (territory.local_price_override_cents/100).toFixed(2)}"></div><label style="display:flex;gap:8px;align-items:center;margin:10px 0"><input id="csEditFeatured" type="checkbox" style="width:20px;height:20px" ${territory?.featured?'checked':''}> Featured in ${E(territory?.name||'territory')}</label></div>
       <button id="csEditSave" class="btn" style="width:100%">SAVE PRODUCT</button>`);
     q('csEditSave').onclick=async()=>{
@@ -228,7 +226,7 @@
   }
 
   function historyRows(rows) {
-    return rows.length ? rows.map(row=>`<div class="cs-history"><b>${E(String(row.movement_type).replaceAll('_',' ').toUpperCase())} • ${row.qty_delta > 0 ? '+' : ''}${row.qty_delta}</b><div>${E(row.brand)} ${E(row.flavor)} • ${E(row.pool||'legacy')}${row.territory_name ? ` • ${E(row.territory_name)}` : ''}</div><div class="muted">${E(row.note||'No note')} • ${new Date(row.created_at).toLocaleString()}${row.previous_qty != null ? ` • ${row.previous_qty} → ${row.resulting_qty}` : ''}${row.order_no ? ` • Order #${row.order_no}` : ''}</div></div>`).join('') : '<div class="cs-empty">No inventory history yet.</div>';
+    return rows.length ? rows.map(row=>`<div class="cs-history"><b>${E(String(row.movement_type).replaceAll('_',' ').toUpperCase())} • ${row.qty_delta > 0 ? '+' : ''}${row.qty_delta}</b><div>${E(row.brand)} ${E(row.flavor)} • ${E(row.pool||'legacy')}${row.territory_name ? ` • ${E(row.territory_name)}` : ''}</div><div class="muted">${E(row.note||'No note')} • ${E(humanStamp(row.created_at))}${row.previous_qty != null ? ` • ${row.previous_qty} → ${row.resulting_qty}` : ''}${row.order_no ? ` • Order #${row.order_no}` : ''}</div></div>`).join('') : '<div class="cs-empty">No inventory history yet.</div>';
   }
 
   async function mutate(url, body) {
@@ -241,7 +239,7 @@
 
   async function refreshCurrent() {
     state.data=null;
-    if (typeof currentTab !== 'undefined' && currentTab === 'inventory') await renderCompanyInventory(); else await renderProductLibrary();
+    if (typeof currentTab !== 'undefined' && ['inventory','stock'].includes(currentTab)) await renderCompanyInventory(); else await renderProductLibrary();
   }
 
   function inventorySubnav() {
@@ -250,16 +248,20 @@
   }
 
   async function renderCompanyInventory() {
-    installStyles(); const host=q('view'); host.innerHTML='<div class="card">Loading Company Stock…</div>';
+    installStyles(); const host=q('view'); host.innerHTML='<div class="card">Loading Stock…</div>';
     try {
       await load();
-      host.innerHTML=`<div class="cs-title">Inventory</div><div class="muted">Global Company Stock and territory pools</div>${inventorySubnav()}<div id="csInventoryBody"></div>`;
-      host.querySelectorAll('[data-cs-view]').forEach(button=>button.onclick=()=>{state.inventoryView=button.dataset.csView;renderCompanyInventory();});
-      if(state.inventoryView==='company')renderCompanyView();
-      else if(state.inventoryView==='history')await renderHistoryView();
-      else renderTerritoryView(state.inventoryView.slice(10));
-    } catch(error){host.innerHTML=`<div class="warn"><b>Inventory could not load.</b><br>${E(error.message)}</div>`;}
+      const territory=activeTerritory();if(!territory)throw new Error('Choose an area first.');
+      host.innerHTML=`<div class="row"><div><div class="cs-title">Stock</div><div class="muted">${E(territory.name)}</div></div><button id="csStockHistory" class="btn ghost">HISTORY</button></div><div class="actions"><button id="csStockAdd" class="btn">ADD STOCK</button><button id="csStockMove" class="btn ghost">MOVE STOCK</button></div><div id="csInventoryBody"></div>`;
+      renderSimpleStock(territory.id);q('csStockHistory').onclick=renderHistoryView;q('csStockAdd').onclick=()=>openSimpleReceive(territory.id);q('csStockMove').onclick=openTransfer;
+    } catch(error){host.innerHTML=`<div class="warn"><b>Stock could not load.</b><br>${E(error.message)}</div>`;}
   }
+
+  function simpleStockCard(product,territoryId){const territory=territoryFor(product,territoryId),physical=totalPhysical(territory),available=territory?.customer_sellable||0,reserved=(territory?.linked.reserved||0)+(territory?.independent.reserved||0);return `<div class="card" data-product-id="${E(product.id)}"><div class="cs-product"><div class="cs-image"><img src="${image(product)}" alt="${E(productName(product))}" onerror="this.onerror=null;this.src='/product-images/catalog-placeholder.webp'"></div><div><div class="cs-name">${E(product.brand)} ${E(product.flavor)} — ${E(strength(product.strength))}</div><div class="statusline"><span class="chip ${territory?.listed?'on':'off'}">${territory?.listed?'LIVE':'HIDDEN'}</span></div></div></div><div class="three"><div class="field"><label>STOCK IN ${E(territory?.name||'AREA').toUpperCase()}</label><input data-physical type="number" min="${reserved}" value="${physical}"></div><div class="field"><label>AVAILABLE TO CUSTOMERS</label><input data-available type="number" min="0" max="${Math.max(0,physical-reserved)}" value="${available}"></div><div class="cs-stat"><span>RESERVED FOR ORDERS</span><b>${reserved}</b></div></div><div class="actions"><button class="btn" data-save-physical>UPDATE STOCK</button><button class="btn ghost" data-save-available>UPDATE AVAILABLE</button><button class="btn ${territory?.listed?'ghost':''}" data-listing>${territory?.listed?'HIDE':'LIST LIVE'}</button></div><details class="advanced"><summary>More Options</summary><div class="actions"><button class="btn ghost" data-edit>EDIT PRODUCT</button><button class="btn ghost" data-history>HISTORY</button><button class="btn danger" data-archive>ARCHIVE</button></div></details></div>`;}
+  function renderSimpleStock(territoryId){const body=q('csInventoryBody'),products=state.data.catalog.filter(product=>!product.archived);body.innerHTML=products.length?products.map(product=>simpleStockCard(product,territoryId)).join(''):'<div class="cs-empty">No products yet.</div>';body.querySelectorAll('[data-product-id]').forEach(card=>{const product=state.data.catalog.find(x=>x.id===card.dataset.productId);card.querySelector('[data-save-physical]').onclick=()=>savePhysicalTarget(product,territoryId,card);card.querySelector('[data-save-available]').onclick=()=>saveAvailableTarget(product,territoryId,card);card.querySelector('[data-listing]').onclick=()=>toggleListing(product,territoryId);card.querySelector('[data-edit]').onclick=()=>openEdit(product,territoryId);card.querySelector('[data-history]').onclick=()=>openHistory(product);card.querySelector('[data-archive]').onclick=()=>toggleArchive(product);});}
+  async function savePhysicalTarget(product,territoryId,card){try{const before=totalPhysical(territoryFor(product,territoryId)),target=Number(card.querySelector('[data-physical]').value),result=await request('/api/admin/company-stock/physical-target',{method:'POST',body:JSON.stringify({territoryId,productId:product.id,target})});if(result.added_held>0&&confirm(`${result.added_held} cans were added. Make them available to customers now?\n\nOK — MAKE AVAILABLE\nCancel — NOT NOW`)){const current=Number(card.querySelector('[data-available]').value)||0;await request('/api/admin/company-stock/available-target',{method:'POST',body:JSON.stringify({territoryId,productId:product.id,target:current+result.added_held})});}alert(`Updated${target===before?' — no quantity change':''}.`);await refreshCurrent();}catch(e){alert(e.message)}}
+  async function saveAvailableTarget(product,territoryId,card){try{await request('/api/admin/company-stock/available-target',{method:'POST',body:JSON.stringify({territoryId,productId:product.id,target:Number(card.querySelector('[data-available]').value)})});alert('Saved.');await refreshCurrent();}catch(e){alert(e.message)}}
+  function openSimpleReceive(territoryId){modal(`<h2>Add Stock</h2><div class="field"><label>PRODUCT</label><select id="csSimpleProduct">${productOptions()}</select></div><div class="field"><label>HOW MANY CANS ARRIVED?</label><input id="csSimpleQty" type="number" min="1"></div><div class="field"><label>WHERE ARE THEY NOW?</label><select id="csSimpleWhere"><option value="company_reserve">Company</option>${state.data.territories.map(t=>`<option value="territory:${E(t.id)}" ${t.id===territoryId?'selected':''}>${E(t.name)}</option>`).join('')}</select></div><label class="checkrow"><input id="csSimpleAvailable" type="checkbox"> Make them available on the website now</label><button id="csSimpleSave" class="btn" style="width:100%">SAVE</button>`);q('csSimpleSave').onclick=async()=>{const where=q('csSimpleWhere').value,qty=Math.max(0,Number(q('csSimpleQty').value)||0),productId=q('csSimpleProduct').value,makeAvailable=q('csSimpleAvailable').checked;if(!qty)return alert('Enter how many cans arrived.');const territory=where.startsWith('territory:')?where.slice(10):'';try{await request('/api/admin/company-stock/receive',{method:'POST',body:JSON.stringify({product_id:productId,target:territory?'linked_territory':'company_reserve',territory_id:territory,qty,sellable_qty:makeAvailable?qty:0})});if(territory&&!makeAvailable&&confirm(`You added ${qty} cans, but customers still can't buy them. Make these available now?\n\nOK — MAKE AVAILABLE\nCancel — NOT NOW`)){const row=state.data.catalog.find(x=>x.id===productId),current=territoryFor(row,territory)?.customer_sellable||0;await request('/api/admin/company-stock/available-target',{method:'POST',body:JSON.stringify({territoryId:territory,productId,target:current+qty})});}closeModal();await refreshCurrent();if(!territory&&confirm(`These cans are in Company Stock. Send some to ${activeTerritory()?.name||'an area'} now?\n\nOK — MOVE STOCK\nCancel — NOT NOW`)){openTransfer();q('csTransferProduct').value=productId;q('csTransferFrom').value='reserve';q('csTransferTo').value=`territory:${territoryId}`;}}catch(error){alert(error.message)}};}
 
   function renderCompanyView() {
     const body=q('csInventoryBody'), products=state.data.catalog.filter(product=>!product.archived);
@@ -288,10 +290,10 @@
   }
 
   function productOptions() { return state.data.catalog.filter(product=>!product.archived).map(product=>`<option value="${E(product.id)}">${E(product.brand)} — ${E(product.flavor)} — ${E(strength(product.strength))}</option>`).join(''); }
-  function endpointOptions() { return `<option value="reserve">Company Reserve</option>${state.data.territories.map(row=>`<option value="territory:${E(row.id)}">${E(row.name)} linked stock</option>`).join('')}`; }
+  function endpointOptions() { return `<option value="reserve">Company</option>${state.data.territories.map(row=>`<option value="territory:${E(row.id)}">${E(row.name)}</option>`).join('')}`; }
 
   function openTransfer() {
-    modal(`<h2>Transfer Linked Stock</h2><div class="good">Company-linked physical totals remain unchanged. Territory transfers use unreserved held stock first, then sellable stock, and arrive held back.</div><div class="field"><label>PRODUCT</label><select id="csTransferProduct">${productOptions()}</select></div><div class="two"><div class="field"><label>FROM</label><select id="csTransferFrom">${endpointOptions()}</select></div><div class="field"><label>TO</label><select id="csTransferTo">${endpointOptions()}</select></div></div><div class="field"><label>QUANTITY</label><input id="csTransferQty" type="number" min="1"></div><div class="field"><label>NOTE</label><input id="csTransferNote"></div><button id="csTransferSave" class="btn" style="width:100%">TRANSFER STOCK</button>`);
+    modal(`<h2>Move Stock</h2><div class="good">Choose where the cans are now and where they should go. Stock moved into a delivery area starts held back until you make it available.</div><div class="field"><label>PRODUCT</label><select id="csTransferProduct">${productOptions()}</select></div><div class="two"><div class="field"><label>FROM</label><select id="csTransferFrom">${endpointOptions()}</select></div><div class="field"><label>TO</label><select id="csTransferTo">${endpointOptions()}</select></div></div><div class="field"><label>QUANTITY</label><input id="csTransferQty" type="number" min="1"></div><div class="field"><label>NOTE <span class="muted">(optional)</span></label><input id="csTransferNote"></div><button id="csTransferSave" class="btn" style="width:100%">MOVE STOCK</button>`);
     q('csTransferSave').onclick=()=>{const parse=value=>value==='reserve'?{type:'reserve',territory:''}:{type:'territory',territory:value.slice(10)},from=parse(q('csTransferFrom').value),to=parse(q('csTransferTo').value);mutate('/api/admin/company-stock/transfer',{product_id:q('csTransferProduct').value,qty:q('csTransferQty').value,from_type:from.type,from_territory_id:from.territory,to_type:to.type,to_territory_id:to.territory,note:q('csTransferNote').value});};
   }
 
