@@ -35,6 +35,8 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
       ['orders','location_confirmed','INTEGER NOT NULL DEFAULT 1'],
       ['orders','final_total_pending','INTEGER NOT NULL DEFAULT 0'],
       ['orders','verified_address',"TEXT DEFAULT ''"],
+      ['orders','company_rate_cents_snapshot','INTEGER'],
+      ['orders','driver2_to_driver1_rate_cents_snapshot','INTEGER'],
       ['platform_order_notification_recipients','territory_id','TEXT'],
       ['platform_settlement_transactions','rate_cents','INTEGER NOT NULL DEFAULT 0'],
       ['platform_settlement_transactions','action_id','TEXT'],
@@ -93,6 +95,22 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
         id TEXT PRIMARY KEY, period_id TEXT NOT NULL, original_snapshot_json TEXT NOT NULL, corrected_snapshot_json TEXT NOT NULL,
         reason TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(period_id) REFERENCES platform_settlement_periods(id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS order_idempotency_keys(
+        request_key TEXT PRIMARY KEY, order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL,
+        FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS order_substitutions(
+        id TEXT PRIMARY KEY, order_id TEXT NOT NULL, action_id TEXT NOT NULL UNIQUE, actor_driver_id TEXT NOT NULL,
+        original_product_id TEXT NOT NULL, missing_qty INTEGER NOT NULL, note TEXT DEFAULT '', created_at TEXT NOT NULL,
+        FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE, FOREIGN KEY(action_id) REFERENCES operational_actions(id) ON DELETE CASCADE,
+        FOREIGN KEY(actor_driver_id) REFERENCES drivers(id) ON DELETE RESTRICT, FOREIGN KEY(original_product_id) REFERENCES products(id) ON DELETE RESTRICT
+      );
+      CREATE INDEX IF NOT EXISTS idx_order_substitutions_order ON order_substitutions(order_id,created_at);
+      CREATE TABLE IF NOT EXISTS order_substitution_lines(
+        id TEXT PRIMARY KEY, substitution_id TEXT NOT NULL, replacement_product_id TEXT NOT NULL, qty INTEGER NOT NULL, created_at TEXT NOT NULL,
+        FOREIGN KEY(substitution_id) REFERENCES order_substitutions(id) ON DELETE CASCADE,
+        FOREIGN KEY(replacement_product_id) REFERENCES products(id) ON DELETE RESTRICT
+      );
     `);
   }
 
@@ -115,6 +133,33 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
     run("UPDATE products SET brand='VELO',updated_at=updated_at WHERE lower(trim(brand))='velo' AND brand<>'VELO'");
     for(const driver of all('SELECT id,territory_id FROM drivers')) run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,created_at,updated_at) VALUES(?,?, 'driver',1,?,?) ON CONFLICT(driver_id,territory_id) DO NOTHING`,driver.id,driver.territory_id,stamp,stamp);
     const victoria=one("SELECT id FROM territories WHERE slug='victoria'"), driver1=victoria?one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name))='victoria driver 1' AND archived=0",victoria.id):null;
+    const driver2=victoria?one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name))='victoria driver 2' AND archived=0",victoria.id):null;
+    if(driver1)setSetting('victoria_driver_1_id',driver1.id);
+    if(driver2)setSetting('victoria_driver_2_id',driver2.id);
+    if(setting('default_company_cut_cents','')==='')setSetting('default_company_cut_cents','900');
+    if(setting('victoria_driver2_to_driver1_rate_cents','')==='')setSetting('victoria_driver2_to_driver1_rate_cents','1400');
+    if(victoria&&driver1&&driver2&&setting('victoria_sale_economics_v2','')!=='done'){
+      run("UPDATE settlement_rules SET active=0,archived=1,updated_at=? WHERE territory_id=? AND from_driver_id IN (?,?) AND rule_type IN ('per_can_driver_to_boss','per_can_driver_to_driver')",stamp,victoria.id,driver1.id,driver2.id);
+      run(`INSERT INTO settlement_rules(id,territory_id,name,active,archived,rule_type,from_driver_id,to_driver_id,zone_id,amount,amount_cents,notes,sort_order,created_at,updated_at) VALUES(?,?,?,1,0,'per_can_driver_to_boss',?,NULL,NULL,9,900,?,0,?,?)`,id(),victoria.id,'Default Company Cut — Victoria Driver 1',driver1.id,'Default $9/can Company entitlement',stamp,stamp);
+      run(`INSERT INTO settlement_rules(id,territory_id,name,active,archived,rule_type,from_driver_id,to_driver_id,zone_id,amount,amount_cents,notes,sort_order,created_at,updated_at) VALUES(?,?,?,1,0,'per_can_driver_to_boss',?,NULL,NULL,9,900,?,0,?,?)`,id(),victoria.id,'Default Company Cut — Victoria Driver 2',driver2.id,'Default $9/can Company entitlement',stamp,stamp);
+      run(`INSERT INTO settlement_rules(id,territory_id,name,active,archived,rule_type,from_driver_id,to_driver_id,zone_id,amount,amount_cents,notes,sort_order,created_at,updated_at) VALUES(?,?,?,1,0,'per_can_driver_to_driver',?,?,NULL,5,500,?,1,?,?)`,id(),victoria.id,'Victoria Driver 1 Commission',driver2.id,driver1.id,'$5/can commission; Driver 2 total internal obligation snapshot is $14/can',stamp,stamp);
+      setSetting('victoria_sale_economics_v2','done');
+    }
+    if(setting('retail_pricing_v2','')!=='done'){
+      for(const territory of all('SELECT id FROM territories')){
+        run('UPDATE pricing_tiers SET active=0 WHERE territory_id=?',territory.id);
+        [[1,4,2500],[5,9,2000],[10,19,1500],[20,null,1250]].forEach((tier,index)=>run('INSERT INTO pricing_tiers(id,territory_id,min_qty,max_qty,unit_price,unit_price_cents,active,sort_order) VALUES(?,?,?,?,?,?,1,?)',id(),territory.id,tier[0],tier[1],tier[2]/100,tier[2],index));
+      }
+      setSetting('minimum_order_qty','1');setSetting('round_down_to_cents','1');setSetting('retail_pricing_v2','done');
+    }
+    if(setting('default_weekly_hours_v1','')!=='done'){
+      const stamp2=now();
+      for(const territory of all('SELECT id FROM territories'))if(!one('SELECT 1 FROM territory_weekly_hours WHERE territory_id=? LIMIT 1',territory.id)){
+        for(let weekday=0;weekday<7;weekday++)run('INSERT INTO territory_weekly_hours(id,territory_id,weekday,open_minute,close_minute,active,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,1,0,?,?)',id(),territory.id,weekday,600,1020,stamp2,stamp2);
+        run('UPDATE territories SET scheduling_configured=1,updated_at=? WHERE id=?',stamp2,territory.id);
+      }
+      setSetting('default_weekly_hours_v1','done');
+    }
     if(sooke&&driver1) run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,created_at,updated_at) VALUES(?,?,'supervisor',1,?,?) ON CONFLICT(driver_id,territory_id) DO UPDATE SET role='supervisor',active=1,updated_at=excluded.updated_at`,driver1.id,sooke.id,stamp,stamp);
     const driver3=victoria?one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name)) IN ('driver 3','victoria driver 3') AND archived=0 ORDER BY created_at LIMIT 1",victoria.id):null;
     if(sooke&&driver3) run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,created_at,updated_at) VALUES(?,?,'driver',1,?,?) ON CONFLICT(driver_id,territory_id) DO UPDATE SET active=1,updated_at=excluded.updated_at`,driver3.id,sooke.id,stamp,stamp);
@@ -166,8 +211,9 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
   }
 
   function applyOrderDetails(orderId, body, territory, schedule) {
-    const manual=bool(body.manual_location),meeting=text(body.meeting_instructions); if(manual&&!meeting) throw new Error('Tell us where to meet you.');
-    run(`UPDATE orders SET schedule_type=?,requested_delivery_date=?,requested_window_start=?,requested_window_end=?,requested_window_label=?,territory_timezone_snapshot=?,outside_hours_message=?,manual_location=?,meeting_instructions=?,location_confirmed=?,final_total_pending=?,verified_address=?,updated_at=? WHERE id=?`,schedule.type,schedule.date,schedule.start,schedule.end,schedule.label,schedule.timezone,schedule.message,manual,meeting,manual?0:1,manual?1:0,manual?'':text(body.address),now(),orderId);
+    const address=text(body.address),meeting=text(body.meeting_instructions),manual=!address;
+    if(!address&&!meeting) throw new Error('Enter a delivery address or useful delivery directions / meeting spot.');
+    run(`UPDATE orders SET schedule_type=?,requested_delivery_date=?,requested_window_start=?,requested_window_end=?,requested_window_label=?,territory_timezone_snapshot=?,outside_hours_message=?,manual_location=?,meeting_instructions=?,location_confirmed=?,final_total_pending=0,verified_address=?,updated_at=? WHERE id=?`,schedule.type,schedule.date,schedule.start,schedule.end,schedule.label,schedule.timezone,schedule.message,bool(manual),meeting,manual?0:1,address,now(),orderId);
     if(manual) addOrderEvent(orderId,'location_needs_confirmation','Location needs confirmation',{meeting_instructions:meeting},{attention:1,created_by_role:'system',visible_to_customer:true});
     if(schedule.type==='outside_hours') addOrderEvent(orderId,'outside_hours_request','Outside-hours delivery requested',{message:schedule.message,date:schedule.date},{attention:1,created_by_role:'system',visible_to_customer:true});
   }
@@ -180,6 +226,26 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
     run('UPDATE orders SET assigned_driver_id=?,updated_at=? WHERE id=?',rule.primary_driver_id,now(),orderId);
     if(rule.watcher_driver_id) run(`INSERT OR IGNORE INTO order_watchers(order_id,driver_id,role,created_at) VALUES(?,?, 'oversight',?)`,orderId,rule.watcher_driver_id,now());
     return one('SELECT * FROM orders WHERE id=?',orderId);
+  }
+
+  function assignVictoriaByQuantity(orderId){
+    const order=one(`SELECT o.*,t.slug territory_slug,(SELECT COALESCE(SUM(qty),0) FROM order_items WHERE order_id=o.id) qty FROM orders o JOIN territories t ON t.id=o.territory_id WHERE o.id=?`,orderId);
+    if(!order||order.territory_slug!=='victoria')return order;
+    const d1=text(setting('victoria_driver_1_id','')),d2=text(setting('victoria_driver_2_id',''));
+    const eligible=driverId=>driverId&&one(`SELECT 1 FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id WHERE d.id=? AND m.territory_id=? AND d.active=1 AND d.archived=0 AND m.active=1`,driverId,order.territory_id);
+    const primary=order.qty<=4?(eligible(d2)?d2:null):(eligible(d1)?d1:null);
+    if(primary)run("UPDATE orders SET assigned_driver_id=?,status=CASE WHEN status='new' THEN 'assigned' ELSE status END,updated_at=? WHERE id=?",primary,now(),orderId);
+    if(eligible(d1)&&primary!==d1)run("INSERT OR IGNORE INTO order_watchers(order_id,driver_id,role,created_at) VALUES(?,?,'oversight',?)",orderId,d1,now());
+    return one('SELECT * FROM orders WHERE id=?',orderId);
+  }
+
+  function addFoundStock(driver,body){
+    const territoryId=text(body.territory_id)||driver.territory_id,productId=text(body.product_id),qty=Math.max(0,int(body.qty)),note=text(body.note);
+    if(!bool(body.physically_possessed))throw new Error('Confirm that you physically possess this found stock.');
+    if(!memberships(driver.id).some(x=>x.territory_id===territoryId))throw new Error('You do not have access to that area.');
+    if(!one('SELECT 1 FROM products WHERE id=? AND active=1 AND archived=0',productId))throw new Error('Product is not in the catalog. Ask Admin to add the SKU first.');
+    if(!qty)throw new Error('Enter the quantity physically found.');
+    return db.transaction(()=>{companyStock.adjustTerritory({territoryId,productId,qtyDelta:qty,movementType:'driver_found_stock',note:note||'Found stock',role:'driver',driverSourceId:driver.id,preferredPool:'independent'});const actionId=createAction({kind:'driver_found_stock',territoryId,actorRole:'driver',actorDriverId:driver.id,note,lines:[{productId,role:'found_stock',qty,delta:qty}]});return{ok:true,action_id:actionId,qty,amount_cents:0};})();
   }
 
   function createAction({kind,territoryId,orderId=null,actorRole,actorDriverId=null,recipientType='',recipientDriverId=null,note='',financialEffect='none',totalAmount=0,lines=[]}){
@@ -207,6 +273,37 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
     const order=one('SELECT * FROM orders WHERE id=?',orderId);if(!order||!canAccessOrder(driver.id,order))throw new Error('Order not found.');const returnedProduct=text(body.returned_product_id),replacementProduct=text(body.replacement_product_id),returned=Math.max(0,int(body.returned_qty)),resellable=Math.max(0,int(body.resellable_qty)),nonresellable=Math.max(0,int(body.nonresellable_qty)),replacement=Math.max(0,int(body.replacement_qty));if(!returnedProduct||!replacementProduct||!returned||!replacement)throw new Error('Choose returned and replacement products and quantities.');if(resellable+nonresellable!==returned)throw new Error('Resellable plus non-resellable cans must equal the returned quantity.');
     return db.transaction(()=>{if(resellable)companyStock.adjustTerritory({territoryId:order.territory_id,productId:returnedProduct,qtyDelta:resellable,movementType:'swap_resellable_return',orderId,driverId:order.assigned_driver_id,note:text(body.note)||'Customer swap',role:'driver',driverSourceId:driver.id});companyStock.adjustTerritory({territoryId:order.territory_id,productId:replacementProduct,qtyDelta:-replacement,movementType:'swap_replacement',orderId,driverId:order.assigned_driver_id,note:text(body.note)||'Customer swap',role:'driver',driverSourceId:driver.id});const actionId=createAction({kind:'swap_cans',territoryId:order.territory_id,orderId,actorRole:'driver',actorDriverId:driver.id,recipientType:'customer',note:text(body.note),lines:[{productId:returnedProduct,role:'returned_resellable',qty:resellable,delta:resellable,metadata:{returned_qty:returned}},{productId:returnedProduct,role:'returned_nonresellable',qty:nonresellable,delta:0},{productId:replacementProduct,role:'replacement',qty:replacement,delta:-replacement}]});addOrderEvent(orderId,'swap_cans','Driver completed a can swap',{action_id:actionId,returned,resellable,nonresellable,replacement},{created_by_role:'driver',created_by_driver_id:driver.id});return {ok:true,action_id:actionId,amount_cents:0};})();
   }
+  function substitute(driver,orderId,body){
+    const order=one('SELECT * FROM orders WHERE id=?',orderId);
+    if(!order||!canAccessOrder(driver.id,order))throw new Error('Order not found.');
+    if(!['new','assigned','acknowledged','picked_up','on_the_way'].includes(order.status))throw new Error('Only an active order can be substituted.');
+    const originalProduct=text(body.original_product_id),missingQty=Math.max(0,int(body.missing_qty)),note=text(body.note);
+    const replacements=(Array.isArray(body.replacements)?body.replacements:[]).map(row=>({productId:text(row.product_id),qty:Math.max(0,int(row.qty))})).filter(row=>row.productId&&row.qty);
+    if(!originalProduct||!missingQty||!replacements.length)throw new Error('Choose the missing product, missing quantity, and at least one replacement.');
+    if(replacements.reduce((sum,row)=>sum+row.qty,0)!==missingQty)throw new Error('Replacement quantities must exactly equal the missing quantity.');
+    const original=one('SELECT * FROM order_items WHERE order_id=? AND product_id=?',orderId,originalProduct);
+    if(!original||int(original.qty)<missingQty)throw new Error('Missing quantity exceeds this product on the order.');
+    for(const row of replacements)if(!one('SELECT 1 FROM products WHERE id=? AND active=1 AND archived=0',row.productId))throw new Error('Every replacement must use an existing active product.');
+    return db.transaction(()=>{
+      companyStock.recordReservedShortage({orderId,territoryId:order.territory_id,productId:originalProduct,qty:missingQty,driverId:driver.id,note:note||'Active-order product substitution'});
+      const remaining=int(original.qty)-missingQty;
+      if(remaining)run('UPDATE order_items SET qty=?,line_total=?,line_total_cents=? WHERE id=?',remaining,(remaining*int(original.unit_price_cents))/100,remaining*int(original.unit_price_cents),original.id);
+      else run('DELETE FROM order_items WHERE id=?',original.id);
+      for(const row of replacements){
+        const product=one('SELECT * FROM products WHERE id=?',row.productId),existing=one('SELECT * FROM order_items WHERE order_id=? AND product_id=?',orderId,row.productId);
+        let itemId;
+        if(existing){itemId=existing.id;const qty=int(existing.qty)+row.qty;run('UPDATE order_items SET qty=?,line_total=?,line_total_cents=? WHERE id=?',qty,(qty*int(existing.unit_price_cents))/100,qty*int(existing.unit_price_cents),itemId);}
+        else{itemId=id();run(`INSERT INTO order_items(id,order_id,product_id,product_name_snapshot,brand_snapshot,strength_snapshot,qty,unit_price,line_total,unit_price_cents,line_total_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,itemId,orderId,row.productId,product.flavor,product.brand,product.strength,row.qty,int(original.unit_price_cents)/100,row.qty*int(original.unit_price_cents)/100,int(original.unit_price_cents),row.qty*int(original.unit_price_cents));}
+        companyStock.reserveOrderItem({orderId,orderItemId:itemId,territoryId:order.territory_id,productId:row.productId,qty:row.qty,driverId:order.assigned_driver_id,note:'Replacement for active-order substitution'});
+      }
+      const actionId=createAction({kind:'order_substitution',territoryId:order.territory_id,orderId,actorRole:'driver',actorDriverId:driver.id,recipientType:'customer',note,lines:[{productId:originalProduct,role:'missing_original',qty:missingQty,delta:-missingQty},...replacements.map(row=>({productId:row.productId,role:'replacement',qty:row.qty,delta:0}))]});
+      const substitutionId=id(),stamp=now();
+      run('INSERT INTO order_substitutions(id,order_id,action_id,actor_driver_id,original_product_id,missing_qty,note,created_at) VALUES(?,?,?,?,?,?,?,?)',substitutionId,orderId,actionId,driver.id,originalProduct,missingQty,note,stamp);
+      for(const row of replacements)run('INSERT INTO order_substitution_lines(id,substitution_id,replacement_product_id,qty,created_at) VALUES(?,?,?,?,?)',id(),substitutionId,row.productId,row.qty,stamp);
+      addOrderEvent(orderId,'order_substitution','Driver substituted unavailable product on active order',{action_id:actionId,substitution_id:substitutionId,original_product_id:originalProduct,missing_qty:missingQty,replacements},{created_by_role:'driver',created_by_driver_id:driver.id,visible_to_customer:true});
+      return{ok:true,action_id:actionId,substitution_id:substitutionId,missing_qty:missingQty,replacements,amount_cents:0};
+    })();
+  }
   function recordOffsite(orderId, body, actorRole, actorDriverId=null){
     const order=one('SELECT * FROM orders WHERE id=?',orderId);if(!order)throw new Error('Off-site order not found.');
     const lines=all('SELECT product_id,qty,line_total_cents FROM order_items WHERE order_id=?',orderId).filter(x=>x.product_id).map(x=>({productId:x.product_id,role:'offsite_sale',qty:x.qty,delta:-int(x.qty),amount:int(x.line_total_cents),metadata:{payment_method:text(body.payment_method),payment_destination:text(body.payment_destination)||'driver'}}));
@@ -222,5 +319,5 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
   function updatePersonalRate(actor,driverId,body){const target=one('SELECT * FROM drivers WHERE id=?',driverId);if(!target)throw new Error('Driver not found.');if(actor.role==='driver'&&(actor.id!==target.id||!target.personal_rate_driver_editable))throw new Error('Only Victoria Driver 1 can change a personal-use rate from the Driver app.');const rate=Math.max(0,int(body.personal_use_rate_cents));run('UPDATE drivers SET personal_use_rate_cents=?,updated_at=? WHERE id=?',rate,now(),driverId);return one('SELECT id,name,personal_use_rate_cents,personal_rate_driver_editable FROM drivers WHERE id=?',driverId);}
 
   installSchema(); migrateAndSeed();
-  return { scheduleConfig,saveSchedule,validateSchedule,applyOrderDetails,memberships,canAccessOrder,assignByVerifiedZone,adminFree,takeForSelf,promotionalCan,swap,recordOffsite,setFinalTotal,updatePersonalRate };
+  return { scheduleConfig,saveSchedule,validateSchedule,applyOrderDetails,memberships,canAccessOrder,assignByVerifiedZone,assignVictoriaByQuantity,addFoundStock,adminFree,takeForSelf,promotionalCan,swap,substitute,recordOffsite,setFinalTotal,updatePersonalRate };
 };

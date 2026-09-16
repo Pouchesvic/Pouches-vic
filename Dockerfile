@@ -20,6 +20,7 @@ COPY company-admin.js ./
 COPY platform-driver.js ./
 COPY platform-storefront.js ./
 COPY public/product-images ./public/product-images
+COPY public/delivery-zone-map.png ./public/delivery-zone-map.png
 COPY scanner.html ./
 COPY PLATFORM-ARCHITECTURE.md ./
 

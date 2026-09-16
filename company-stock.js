@@ -268,6 +268,26 @@ module.exports = function createCompanyStock({ db, now, id, text, int, bool, jso
     run("UPDATE orders SET inventory_model='pooled_v1',inventory_finalized=0 WHERE id=?", orderId);
   }
 
+  function recordReservedShortage({ orderId, territoryId, productId, qty, driverId = null, note = '' }) {
+    let remaining = Math.max(0, int(qty));
+    if (!remaining) throw new Error('Enter the missing quantity.');
+    const reservations = all("SELECT * FROM order_inventory_reservations WHERE order_id=? AND territory_id=? AND product_id=? AND status='reserved' ORDER BY created_at,id", orderId, territoryId, productId);
+    if (reservations.reduce((sum, row) => sum + int(row.qty), 0) < remaining) throw new Error('Missing quantity exceeds the original product reserved for this order.');
+    for (const reservation of reservations) {
+      const take = Math.min(remaining, int(reservation.qty));
+      if (!take) continue;
+      updateBucket(territoryId, productId, reservation.pool, 'reserved', -take, {
+        movementType: 'order_substitution_shortage', orderId, driverId, note, role: 'driver', driverSourceId: driverId,
+        metadata: { reservation_id: reservation.id, missing_qty: take }
+      });
+      if (take === int(reservation.qty)) run("UPDATE order_inventory_reservations SET status='shortage',updated_at=? WHERE id=?", now(), reservation.id);
+      else run('UPDATE order_inventory_reservations SET qty=qty-?,updated_at=? WHERE id=?', take, now(), reservation.id);
+      remaining -= take;
+      if (!remaining) break;
+    }
+    return int(qty);
+  }
+
   function releaseOrder(orderId, { role = 'system', driverId = null, note = '' } = {}) {
     const reservations = all("SELECT * FROM order_inventory_reservations WHERE order_id=? AND status='reserved' ORDER BY created_at,id", orderId);
     for (const reservation of reservations) {
@@ -650,6 +670,7 @@ module.exports = function createCompanyStock({ db, now, id, text, int, bool, jso
     ensureTerritoryProduct,
     syncLegacyInventory,
     reserveOrderItem,
+    recordReservedShortage,
     releaseOrder,
     finalizeOrder,
     adjustTerritory,
