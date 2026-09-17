@@ -102,6 +102,7 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
         FOREIGN KEY(driver_id) REFERENCES drivers(id) ON DELETE CASCADE
       );
     `);
+    ensureColumn('driver_territory_memberships','can_manage_hours','INTEGER NOT NULL DEFAULT 0');
   }
 
   function migrateAndSeed() {
@@ -114,6 +115,7 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
       if(victoria){ for(const tier of all('SELECT * FROM pricing_tiers WHERE territory_id=? ORDER BY sort_order',victoria.id)) run('INSERT INTO pricing_tiers(id,territory_id,min_qty,max_qty,unit_price,unit_price_cents,active,sort_order) VALUES(?,?,?,?,?,?,?,?)',id(),sid,tier.min_qty,tier.max_qty,tier.unit_price,tier.unit_price_cents,tier.active,tier.sort_order); }
     }
     run("UPDATE territories SET timezone='America/Vancouver' WHERE slug IN ('victoria','sooke') AND COALESCE(timezone,'')=''");
+    if(setting('default_local_hours_v1','')!=='done'){for(const territory of all('SELECT id FROM territories WHERE active=1 AND archived=0')){if(!one('SELECT 1 FROM territory_weekly_hours WHERE territory_id=? LIMIT 1',territory.id)){for(let weekday=0;weekday<7;weekday++)run('INSERT INTO territory_weekly_hours(id,territory_id,weekday,open_minute,close_minute,active,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?,?)',id(),territory.id,weekday,540,1020,weekday,stamp,stamp);run("UPDATE territories SET scheduling_configured=1,operating_hours=CASE WHEN trim(COALESCE(operating_hours,''))='' THEN 'Daily • 9:00 AM–5:00 PM' ELSE operating_hours END,updated_at=? WHERE id=?",stamp,territory.id);}}setSetting('default_local_hours_v1','done');}
     // Final retail tiers. Additive migration: old tier rows remain historical configuration but are inactive.
     if(setting('retail_pricing_final_v1','')!=='done'){
       for(const territory of all('SELECT id FROM territories WHERE active=1 AND archived=0')){
@@ -137,6 +139,7 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
     const driver3=victoria?one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name)) IN ('driver 3','victoria driver 3') AND archived=0 ORDER BY created_at LIMIT 1",victoria.id):null;
     if(sooke&&driver3) run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,created_at,updated_at) VALUES(?,?,'driver',1,?,?) ON CONFLICT(driver_id,territory_id) DO UPDATE SET active=1,updated_at=excluded.updated_at`,driver3.id,sooke.id,stamp,stamp);
     if(sooke&&driver3){
+      run('UPDATE territories SET main_driver_id=COALESCE(main_driver_id,?),default_driver_id=COALESCE(default_driver_id,?),updated_at=? WHERE id=?',driver3.id,driver3.id,stamp,sooke.id);
       const dispatch=one('SELECT id FROM territory_dispatch_rules WHERE territory_id=? AND zone_id IS NULL AND active=1 ORDER BY created_at LIMIT 1',sooke.id);
       if(!dispatch)run(`INSERT INTO territory_dispatch_rules(id,territory_id,zone_id,primary_driver_id,watcher_driver_id,require_verified_location,active,created_at,updated_at) VALUES(?,?,NULL,?,?,1,1,?,?)`,id(),sooke.id,driver3.id,driver1?.id||null,stamp,stamp);
     }
@@ -145,45 +148,34 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
   }
 
   function scheduleConfig(territoryId, dateValue='') {
-    const territory=one('SELECT * FROM territories WHERE id=? AND active=1 AND archived=0',territoryId); if(!territory) throw new Error('Delivery area unavailable');
+    const territory=one('SELECT * FROM territories WHERE id=? AND active=1 AND archived=0',territoryId); if(!territory) throw new Error('Local unavailable');
     const timezone=text(territory.timezone)||'America/Vancouver', serverNow=new Date(), today=localDate(serverNow,timezone), requested=validDate(dateValue)?dateValue:today;
     const parts=localParts(new Date(`${requested}T12:00:00Z`),timezone), weekday=weekdayIndex(parts.weekday);
     const rows=all('SELECT * FROM territory_weekly_hours WHERE territory_id=? AND weekday=? AND active=1 ORDER BY open_minute,sort_order',territoryId,weekday);
-    const current=localParts(serverNow,timezone),currentMinute=Number(current.hour)*60+Number(current.minute),windows=[],latestClose=rows.length?Math.max(...rows.map(x=>int(x.close_minute))):null;
-    for(const row of rows){const close=int(row.close_minute),grace=close===latestClose?15:0;for(let start=int(row.open_minute);start+45<=close+grace;start+=45){ if(requested===today&&start<=currentMinute)continue; windows.push({start_minute:start,end_minute:start+45,start:`${String(Math.floor(start/60)).padStart(2,'0')}:${String(start%60).padStart(2,'0')}`,end:`${String(Math.floor((start+45)/60)%24).padStart(2,'0')}:${String((start+45)%60).padStart(2,'0')}`,label:`${minuteLabel(start)}–${minuteLabel(start+45)}`}); }}
-    return {territory:{id:territory.id,name:territory.name,slug:territory.slug,timezone,scheduling_configured:!!territory.scheduling_configured},server_now:serverNow.toISOString(),local_today:today,date:requested,windows,setup_needed:!territory.scheduling_configured||!all('SELECT 1 FROM territory_weekly_hours WHERE territory_id=? AND active=1 LIMIT 1',territoryId).length};
+    const current=localParts(serverNow,timezone),currentMinute=Number(current.hour)*60+Number(current.minute),latestClose=rows.length?Math.max(...rows.map(x=>int(x.close_minute))):null,cutoffMinutes=Math.max(0,int(territory.same_day_cutoff_minutes,15));
+    const sameDayState=requested!==today||latestClose==null?'normal':currentMinute>=latestClose?'closed':currentMinute>=Math.max(0,latestClose-cutoffMinutes)?'late':'normal';
+    let windows=[];if(sameDayState!=='late'&&sameDayState!=='closed'){const raw=[];for(const row of rows){const close=int(row.close_minute),grace=close===latestClose?15:0;for(let start=int(row.open_minute);start+45<=close+grace;start+=45)raw.push({start_minute:start,end_minute:start+45,start:`${String(Math.floor(start/60)).padStart(2,'0')}:${String(start%60).padStart(2,'0')}`,end:`${String(Math.floor((start+45)/60)%24).padStart(2,'0')}:${String((start+45)%60).padStart(2,'0')}`,label:`${minuteLabel(start)}–${minuteLabel(start+45)}`});}const finalEnd=raw.length?Math.max(...raw.map(x=>x.end_minute)):null;windows=requested===today?raw.filter(x=>x.start_minute>currentMinute||(x.end_minute===finalEnd&&currentMinute<Math.max(0,latestClose-cutoffMinutes))):raw;}
+    return {territory:{id:territory.id,name:territory.name,slug:territory.slug,timezone,scheduling_configured:!!territory.scheduling_configured,same_day_cutoff_minutes:cutoffMinutes},server_now:serverNow.toISOString(),local_today:today,date:requested,windows,same_day_state:sameDayState,closing_minute:latestClose,cutoff_minute:latestClose==null?null:Math.max(0,latestClose-cutoffMinutes),setup_needed:!territory.scheduling_configured||!all('SELECT 1 FROM territory_weekly_hours WHERE territory_id=? AND active=1 LIMIT 1',territoryId).length};
   }
 
   function validateSchedule(body, territory) {
-    const timezone=text(territory.timezone)||'America/Vancouver', type=text(body.schedule_type);
-    const enforceSameDayCutoff=(date)=>{const nowDate=new Date(),today=localDate(nowDate,timezone);if(date!==today)return;const p=localParts(nowDate,timezone),weekday=weekdayIndex(p.weekday),currentMinute=Number(p.hour)*60+Number(p.minute),rows=all('SELECT close_minute FROM territory_weekly_hours WHERE territory_id=? AND weekday=? AND active=1',territory.id,weekday);if(!rows.length)return;const close=Math.max(...rows.map(x=>int(x.close_minute)));if(currentMinute>=close)throw new Error('Same-day ordering is closed for today. Please choose another delivery day.');};
-    if(type==='outside_hours'){
-      const message=text(body.outside_hours_message); if(!message) throw new Error('Tell us when you need delivery outside normal hours.');
-      const date=validDate(body.requested_delivery_date)?text(body.requested_delivery_date):localDate(new Date(),timezone);
-      enforceSameDayCutoff(date);
-      return {type,date,start:null,end:null,label:'Outside-hours request',timezone,message};
+    const timezone=text(territory.timezone)||'America/Vancouver', type=text(body.schedule_type), date=validDate(body.requested_delivery_date)?text(body.requested_delivery_date):localDate(new Date(),timezone),config=scheduleConfig(territory.id,date);
+    if(date===config.local_today&&config.same_day_state==='closed')throw new Error('Same-day ordering is closed for today. Please choose another delivery day.');
+    if(date===config.local_today&&config.same_day_state==='late'){
+      if(!bool(body.late_same_day_ack))throw new Error('Please confirm that this late order may be delivered on the next open day.');
+      return {type:'late_same_day',date,start:null,end:null,label:'Late same-day request — today not guaranteed',timezone,message:'Ordered near closing. Delivery today is not guaranteed and may move to the next open day.'};
     }
-    if(type!=='window') throw new Error('Choose a delivery date and 45-minute time window, or request delivery outside normal hours.');
-    const date=text(body.requested_delivery_date),start=text(body.requested_window_start),end=text(body.requested_window_end);
-    if(!validDate(date)||!/^\d{2}:\d{2}$/.test(start)||!/^\d{2}:\d{2}$/.test(end)) throw new Error('Choose a valid delivery date and time window.');
-    enforceSameDayCutoff(date);
-    const config=scheduleConfig(territory.id,date),match=config.windows.find(x=>x.start===start&&x.end===end); if(!match) throw new Error('That delivery window is no longer available. Please choose another time.');
-    return {type,date,start,end,label:match.label,timezone,message:''};
+    if(type==='outside_hours'){const message=text(body.outside_hours_message);if(!message)throw new Error('Tell us when you need delivery outside normal hours.');return {type,date,start:null,end:null,label:'Outside-hours request',timezone,message};}
+    if(type!=='window')throw new Error('Choose a delivery date and 45-minute time window, or request delivery outside normal hours.');
+    const start=text(body.requested_window_start),end=text(body.requested_window_end);if(!validDate(date)||!/^\d{2}:\d{2}$/.test(start)||!/^\d{2}:\d{2}$/.test(end))throw new Error('Choose a valid delivery date and time window.');
+    const match=config.windows.find(x=>x.start===start&&x.end===end);if(!match)throw new Error('That delivery window is no longer available. Please choose another time.');return {type,date,start,end,label:match.label,timezone,message:''};
   }
 
   function saveSchedule(territoryId, body) {
-    const territory=one('SELECT * FROM territories WHERE id=?',territoryId); if(!territory)throw new Error('Delivery area not found.');
-    const timezone=text(body.timezone)||text(territory.timezone)||'America/Vancouver';
-    try{new Intl.DateTimeFormat('en-CA',{timeZone:timezone}).format(new Date());}catch{throw new Error('Choose a valid IANA timezone.');}
-    const hours=Array.isArray(body.hours)?body.hours:[];
-    for(const row of hours){const day=int(row.weekday,-1),open=int(row.open_minute,-1),close=int(row.close_minute,-1);if(day<0||day>6||open<0||close>1440||close<=open)throw new Error('Each open period needs a valid day, opening time and closing time.');}
-    db.transaction(()=>{
-      run('DELETE FROM territory_weekly_hours WHERE territory_id=?',territoryId);
-      const stamp=now();
-      hours.forEach((row,index)=>run('INSERT INTO territory_weekly_hours(id,territory_id,weekday,open_minute,close_minute,active,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?,?)',id(),territoryId,int(row.weekday),int(row.open_minute),int(row.close_minute),index,stamp,stamp));
-      run('UPDATE territories SET timezone=?,scheduling_configured=?,updated_at=? WHERE id=?',timezone,hours.length?1:0,stamp,territoryId);
-    })();
-    return {timezone,scheduling_configured:hours.length>0,hours:all('SELECT * FROM territory_weekly_hours WHERE territory_id=? ORDER BY weekday,open_minute',territoryId)};
+    const territory=one('SELECT * FROM territories WHERE id=?',territoryId);if(!territory)throw new Error('Local not found.');const timezone=text(body.timezone)||text(territory.timezone)||'America/Vancouver';try{new Intl.DateTimeFormat('en-CA',{timeZone:timezone}).format(new Date());}catch{throw new Error('Choose a valid IANA timezone.');}
+    const hours=Array.isArray(body.hours)?body.hours:[];for(const row of hours){const day=int(row.weekday,-1),open=int(row.open_minute,-1),close=int(row.close_minute,-1);if(day<0||day>6||open<0||close>1440||close<=open)throw new Error('Each open period needs a valid day, opening time and closing time.');}
+    const onePerDay=hours.length===7&&new Set(hours.map(x=>int(x.weekday))).size===7,unique=onePerDay?new Set(hours.map(x=>`${int(x.open_minute)}-${int(x.close_minute)}`)):new Set(),display=hours.length?(onePerDay&&unique.size===1?`Daily • ${minuteLabel(int(hours[0].open_minute))}–${minuteLabel(int(hours[0].close_minute))}`:'Hours vary by day • see delivery times'):'Closed / hours not set';
+    db.transaction(()=>{run('DELETE FROM territory_weekly_hours WHERE territory_id=?',territoryId);const stamp=now();hours.forEach((row,index)=>run('INSERT INTO territory_weekly_hours(id,territory_id,weekday,open_minute,close_minute,active,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?,?)',id(),territoryId,int(row.weekday),int(row.open_minute),int(row.close_minute),index,stamp,stamp));run('UPDATE territories SET timezone=?,scheduling_configured=?,operating_hours=?,updated_at=? WHERE id=?',timezone,hours.length?1:0,display,stamp,territoryId);})();return {timezone,scheduling_configured:hours.length>0,operating_hours:display,hours:all('SELECT * FROM territory_weekly_hours WHERE territory_id=? ORDER BY weekday,open_minute',territoryId)};
   }
 
   function applyOrderDetails(orderId, body, territory, schedule) {
@@ -191,6 +183,7 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
     run(`UPDATE orders SET schedule_type=?,requested_delivery_date=?,requested_window_start=?,requested_window_end=?,requested_window_label=?,territory_timezone_snapshot=?,outside_hours_message=?,manual_location=?,meeting_instructions=?,location_confirmed=?,final_total_pending=?,verified_address=?,updated_at=? WHERE id=?`,schedule.type,schedule.date,schedule.start,schedule.end,schedule.label,schedule.timezone,schedule.message,manual,meeting,manual?0:1,manual?1:0,manual?'':text(body.address),now(),orderId);
     if(manual) addOrderEvent(orderId,'location_needs_confirmation','Location needs confirmation',{meeting_instructions:meeting},{attention:1,created_by_role:'system',visible_to_customer:true});
     if(schedule.type==='outside_hours') addOrderEvent(orderId,'outside_hours_request','Outside-hours delivery requested',{message:schedule.message,date:schedule.date},{attention:1,created_by_role:'system',visible_to_customer:true});
+    if(schedule.type==='late_same_day') addOrderEvent(orderId,'late_same_day','Late order — delivery today is not guaranteed',{message:schedule.message,date:schedule.date},{attention:1,created_by_role:'system',visible_to_customer:true});
   }
 
   function memberships(driverId){return all(`SELECT m.*,t.name territory_name,t.slug territory_slug FROM driver_territory_memberships m JOIN territories t ON t.id=m.territory_id WHERE m.driver_id=? AND m.active=1 AND t.active=1 AND t.archived=0 ORDER BY CASE m.role WHEN 'supervisor' THEN 0 ELSE 1 END,t.name`,driverId);}

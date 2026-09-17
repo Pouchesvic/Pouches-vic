@@ -78,7 +78,7 @@
     if(document.getElementById('pvAgeGate') || location.pathname.startsWith('/order/')) return;
     if(config?.profile?.entry_age_gate_enabled===false || ageAccepted()) return;
     const p=config.profile||{}; const g=document.createElement('div');g.id='pvAgeGate';g.className='pv-gate';
-    g.innerHTML=`<div class="pv-gate-card"><div style="font-size:13px;font-weight:900;letter-spacing:.12em">${E(p.business_name||'POUCHES VIC')}</div><h1>${E(p.entry_age_gate_title||'19+ ONLY')}</h1><p>${E(p.entry_age_gate_text||'You must be 19 or older to enter this site.')}</p><button class="pv-gate-btn primary" id="pvAgeYes">YES, I’M 19+</button><button class="pv-gate-btn secondary" id="pvAgeNo">NO, I’M NOT</button></div>`;
+    g.innerHTML=`<div class="pv-gate-card"><div style="font-size:13px;font-weight:900;letter-spacing:.12em">${E(p.business_name||'POUCHES LOCAL')}</div><h1>${E(p.entry_age_gate_title||'19+ ONLY')}</h1><p>${E(p.entry_age_gate_text||'You must be 19 or older to enter this site.')}</p><button class="pv-gate-btn primary" id="pvAgeYes">YES, I’M 19+</button><button class="pv-gate-btn secondary" id="pvAgeNo">NO, I’M NOT</button></div>`;
     document.body.appendChild(g);
     document.getElementById('pvAgeYes').onclick=()=>{sessionStorage.setItem('pv_entry_age_ok','1');g.remove();};
     document.getElementById('pvAgeNo').onclick=()=>{g.querySelector('.pv-gate-card').innerHTML='<h1>Sorry</h1><p>You must meet the age requirement to enter this site.</p>';};

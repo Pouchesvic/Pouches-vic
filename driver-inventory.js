@@ -63,19 +63,13 @@ module.exports = function createDriverInventory({ db, companyStock, now, id, tex
     );
   `);
 
+  function validLocalDriver(territoryId,driverId){return driverId&&!!one(`SELECT d.id FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1 WHERE d.id=? AND d.active=1 AND d.archived=0`,territoryId,driverId);}
   function primaryDriver(territoryId) {
-    const territory=one('SELECT * FROM territories WHERE id=?',territoryId);
-    if(!territory)return null;
-    if(territory.slug==='victoria'){
-      const configured=text(setting('victoria_driver_1_id',''));
-      if(configured&&one('SELECT 1 FROM drivers WHERE id=? AND active=1 AND archived=0',configured))return configured;
-      const d=one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name))='victoria driver 1' AND active=1 AND archived=0 LIMIT 1",territoryId);
-      if(d)return d.id;
-    }
-    const dispatch=one('SELECT primary_driver_id FROM territory_dispatch_rules WHERE territory_id=? AND active=1 ORDER BY CASE WHEN zone_id IS NULL THEN 1 ELSE 0 END,created_at LIMIT 1',territoryId);
-    if(dispatch?.primary_driver_id)return dispatch.primary_driver_id;
-    if(territory.default_driver_id&&one('SELECT 1 FROM drivers WHERE id=? AND active=1 AND archived=0',territory.default_driver_id))return territory.default_driver_id;
-    return one('SELECT id FROM drivers WHERE territory_id=? AND active=1 AND archived=0 ORDER BY CASE WHEN role=\'operations_admin\' THEN 0 ELSE 1 END,created_at LIMIT 1',territoryId)?.id||null;
+    const territory=one('SELECT * FROM territories WHERE id=?',territoryId);if(!territory)return null;
+    if(validLocalDriver(territoryId,territory.main_driver_id))return territory.main_driver_id;
+    const dispatch=one('SELECT primary_driver_id FROM territory_dispatch_rules WHERE territory_id=? AND active=1 ORDER BY CASE WHEN zone_id IS NULL THEN 1 ELSE 0 END,created_at LIMIT 1',territoryId);if(validLocalDriver(territoryId,dispatch?.primary_driver_id))return dispatch.primary_driver_id;
+    if(validLocalDriver(territoryId,territory.default_driver_id))return territory.default_driver_id;
+    return one(`SELECT d.id FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1 WHERE d.active=1 AND d.archived=0 ORDER BY CASE WHEN d.role='operations_admin' OR m.role='supervisor' THEN 0 ELSE 1 END,d.created_at,d.name LIMIT 1`,territoryId)?.id||null;
   }
 
   function ensureRow(driverId,territoryId,productId){
@@ -130,16 +124,10 @@ module.exports = function createDriverInventory({ db, companyStock, now, id, tex
   seed();
 
   function storefrontDriver(territoryId,{lane='',qty=0}={}){
-    const t=one('SELECT * FROM territories WHERE id=?',territoryId);if(!t)return null;
-    if(t.slug==='victoria'){
-      const d1=text(setting('victoria_driver_1_id',''))||one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name))='victoria driver 1' LIMIT 1",territoryId)?.id;
-      const d2=text(setting('victoria_driver_2_id',''))||one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name))='victoria driver 2' LIMIT 1",territoryId)?.id;
-      if(text(lane)==='small'||(!lane&&int(qty)>0&&int(qty)<=4))return d2||d1||null;
-      return d1||d2||null;
-    }
-    return primaryDriver(territoryId);
+    const t=one('SELECT * FROM territories WHERE id=?',territoryId);if(!t)return null;const max=Math.max(1,int(t.small_order_max_qty,4)),main=validLocalDriver(territoryId,t.main_driver_id)?t.main_driver_id:primaryDriver(territoryId),small=validLocalDriver(territoryId,t.small_orders_driver_id)?t.small_orders_driver_id:null;
+    if(small&&(text(lane)==='small'||(!text(lane)&&int(qty)>0&&int(qty)<=max)))return small;return main||small||null;
   }
-  function laneAllowed(territoryId,lane,qty){const t=one('SELECT slug FROM territories WHERE id=?',territoryId);if(t?.slug!=='victoria')return true;return text(lane)==='small'?int(qty)>=1&&int(qty)<=4:int(qty)>=5;}
+  function laneAllowed(territoryId,lane,qty){const t=one('SELECT small_orders_driver_id,small_order_max_qty FROM territories WHERE id=?',territoryId);if(!t)return false;const max=Math.max(1,int(t.small_order_max_qty,4)),small=validLocalDriver(territoryId,t.small_orders_driver_id);if(!small)return text(lane)!=='small'&&int(qty)>=1;return text(lane)==='small'?int(qty)>=1&&int(qty)<=max:int(qty)>max;}
 
   function available(driverId,territoryId,productId){reconcileProduct(territoryId,productId);return int(ensureRow(driverId,territoryId,productId).sellable_qty);}
   function snapshot(territoryId,driverId){reconcileTerritory(territoryId);return all(`SELECT di.*,p.brand,p.flavor,p.strength,p.image FROM driver_inventory di JOIN products p ON p.id=di.product_id WHERE di.territory_id=? AND di.driver_id=? ORDER BY p.brand,p.flavor`,territoryId,driverId);}

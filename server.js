@@ -469,6 +469,12 @@ function ensureColumn(table, name, def) {
   if (!cols.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${def}`);
 }
 
+// One consistent recovery point before the Local-architecture schema upgrade.
+const PRE_LOCAL_BACKUP=path.join(DATA_DIR,'pouchesvic-pre-local-architecture-2026-09-17.db');
+if(fs.existsSync(DB_FILE)&&!fs.existsSync(PRE_LOCAL_BACKUP)){
+  try{db.exec(`VACUUM INTO '${PRE_LOCAL_BACKUP.replace(/'/g,"''")}'`);}catch(e){console.error('Pre-Local database backup failed:',e.message);}
+}
+
 // Safe upgrades from earlier PouchesVic builds.
 [
   ['territories','archived','INTEGER NOT NULL DEFAULT 0'],
@@ -480,6 +486,10 @@ function ensureColumn(table, name, def) {
   ['territories','payment_note_text','TEXT DEFAULT \'No upfront payment — pay when your order arrives.\''],
   ['territories','auto_dispatch_enabled','INTEGER NOT NULL DEFAULT 1'],
   ['territories','default_driver_id','TEXT'],
+  ['territories','main_driver_id','TEXT'],
+  ['territories','small_orders_driver_id','TEXT'],
+  ['territories','small_order_max_qty','INTEGER NOT NULL DEFAULT 4'],
+  ['territories','same_day_cutoff_minutes','INTEGER NOT NULL DEFAULT 15'],
   ['products','archived','INTEGER NOT NULL DEFAULT 0'],
   ['territory_products','local_price_override_cents','INTEGER'],
   ['drivers','archived','INTEGER NOT NULL DEFAULT 0'],
@@ -607,7 +617,7 @@ companyStock = createCompanyStock({ db, now, id, text, int, bool, jsonText, safe
 globalThis.pvCompanyStock = companyStock;
 
 function ensureDefaultDispatchDrivers() {
-  const territories=all('SELECT id,slug,default_driver_id FROM territories WHERE active=1 AND archived=0');
+  const territories=all('SELECT id,slug,default_driver_id,main_driver_id,small_orders_driver_id FROM territories WHERE active=1 AND archived=0');
   for(const t of territories){
     let current=t.default_driver_id
       ? one('SELECT id FROM drivers WHERE id=? AND territory_id=? AND active=1 AND archived=0',t.default_driver_id,t.id)
@@ -622,10 +632,12 @@ function ensureDefaultDispatchDrivers() {
         WHERE territory_id=? AND active=1 AND archived=0
         ORDER BY CASE WHEN role='operations_admin' THEN 0 ELSE 1 END, created_at, name LIMIT 1`,t.id);
     }
-    if(d) run('UPDATE territories SET default_driver_id=?,updated_at=? WHERE id=?',d.id,now(),t.id);
+    if(d) run('UPDATE territories SET default_driver_id=?,main_driver_id=COALESCE(main_driver_id,?),updated_at=? WHERE id=?',d.id,d.id,now(),t.id);
   }
 }
 ensureDefaultDispatchDrivers();
+const victoriaRouting=one("SELECT * FROM territories WHERE slug='victoria'");
+if(victoriaRouting){const d1=one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name))='victoria driver 1' AND active=1 AND archived=0 LIMIT 1",victoriaRouting.id),d2=one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name))='victoria driver 2' AND active=1 AND archived=0 LIMIT 1",victoriaRouting.id);if(d1)run('UPDATE territories SET main_driver_id=COALESCE(main_driver_id,?),default_driver_id=COALESCE(default_driver_id,?) WHERE id=?',d1.id,d1.id,victoriaRouting.id);if(d2)run('UPDATE territories SET small_orders_driver_id=COALESCE(small_orders_driver_id,?),small_order_max_qty=COALESCE(small_order_max_qty,4) WHERE id=?',d2.id,victoriaRouting.id);}
 finalOperations = createFinalOperations({ db, companyStock, now, id, text, int, bool, jsonText, safeJson, addOrderEvent });
 globalThis.pvFinalOperations = finalOperations;
 driverInventory = createDriverInventory({ db, companyStock, now, id, text, int, jsonText });
@@ -657,9 +669,9 @@ async function sendDriverPush(driverId,orderId){
   const qty=(o.items||[]).reduce((s,x)=>s+int(x.qty),0);
   const subs=all('SELECT * FROM push_subscriptions WHERE driver_id=?',driverId);
   if(!subs.length)return {sent:0};
-  const tz=o.territory_timezone_snapshot||'America/Vancouver',parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value])),today=`${parts.year}-${parts.month}-${parts.day}`,future=o.requested_delivery_date>today;
+  const tz=o.territory_timezone_snapshot||'America/Vancouver',parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value])),today=`${parts.year}-${parts.month}-${parts.day}`,future=o.requested_delivery_date>today,late=o.schedule_type==='late_same_day';
   const payload=JSON.stringify({
-    title:future?`NEW FUTURE ORDER #${o.order_no}`:`New Pouches Vic Order #${o.order_no}`,
+    title:late?`LATE ORDER — TODAY NOT GUARANTEED #${o.order_no}`:future?`NEW FUTURE ORDER #${o.order_no}`:`New Pouches Local Order #${o.order_no}`,
     body:future?`${o.requested_delivery_date} • ${o.requested_window_label||'Requested time'} • ${qty} cans`:`${qty} cans • ${o.address||o.meeting_instructions||o.zone_name_snapshot||'New delivery'} • ${o.final_total_pending?'Total pending':money(o.total_cents)}`,
     order_id:o.id,
     order_no:o.order_no,
@@ -909,8 +921,9 @@ function createOrderCore(b,{source='web',created_by_role='customer',created_by_d
   const minimumOrderQty=Math.max(1,int(setting('minimum_order_qty','1'),1));
   if(source==='web'&&requestedQty<minimumOrderQty)throw new Error(`Minimum order is ${minimumOrderQty} cans`);
   if(source==='web'&&!driverInventory.laneAllowed(territory.id,text(b.storefront_lane),requestedQty)){
-    if(text(b.storefront_lane)==='small')throw new Error('Orders of 5 or more cans use the Victoria main shop.');
-    throw new Error('Orders of 1–4 cans use Victoria Small Orders.');
+    const max=Math.max(1,int(territory.small_order_max_qty,4));
+    if(text(b.storefront_lane)==='small')throw new Error(`Orders of ${max+1} or more cans use Local ${territory.name} Main Shop.`);
+    throw new Error(`Orders of 1–${max} cans use Local ${territory.name} Small Orders.`);
   }
 
   let zone=null;
@@ -1092,7 +1105,7 @@ function orderConfirmationHtml(o) {
   const items=o.items.map(x=>`<tr><td style="padding:9px 0;border-bottom:1px solid #e7e7e4">${x.qty} × ${htmlEscape(x.brand_snapshot)} ${htmlEscape(x.product_name_snapshot)}${x.strength_snapshot?` • ${htmlEscape(displayStrength(x.strength_snapshot))}`:''}</td><td style="padding:9px 0;border-bottom:1px solid #e7e7e4;text-align:right;white-space:nowrap">${money(x.line_total_cents)}</td></tr>`).join('');
   const discount=o.customer_discount_cents>0?`<tr><td style="padding-top:7px">${htmlEscape(setting('customer_discount_label','Customer Appreciation Discount'))}</td><td style="padding-top:7px;text-align:right;white-space:nowrap">−${money(o.customer_discount_cents)}</td></tr>`:'';
   const deliverySavings=int(o.delivery_savings_cents)>0?`<tr><td style="padding-top:7px">${htmlEscape(o.delivery_discount_reason||'Delivery discount')}</td><td style="padding-top:7px;text-align:right;white-space:nowrap">−${money(o.delivery_savings_cents)}</td></tr><tr><td style="padding-top:7px;font-weight:bold">Delivery</td><td style="padding-top:7px;text-align:right;font-weight:bold">${int(o.delivery_fee_cents)===0?'FREE':money(o.delivery_fee_cents)}</td></tr>`:'';
-  return `<!doctype html><html><body style="margin:0;background:#f2f2ef;color:#171717;font-family:Arial,sans-serif"><div style="max-width:600px;margin:0 auto;padding:24px 14px"><div style="background:#fff;border-radius:18px;padding:24px"><div style="font-size:12px;font-weight:bold;letter-spacing:.08em">POUCHES VIC</div><h1 style="font-size:26px;margin:8px 0">Order #${o.order_no} confirmed</h1><p style="line-height:1.5">Thanks${o.customer_name?`, ${htmlEscape(o.customer_name)}`:''}. We received your order and will keep the live order page updated.</p><table role="presentation" style="width:100%;border-collapse:collapse;margin:18px 0">${items}<tr><td style="padding-top:14px">Products</td><td style="padding-top:14px;text-align:right;white-space:nowrap">${money(o.subtotal_cents)}</td></tr><tr><td style="padding-top:7px">${htmlEscape(o.zone_name_snapshot||'Delivery')} Delivery</td><td style="padding-top:7px;text-align:right;white-space:nowrap">${money(o.normal_delivery_fee_cents||o.delivery_fee_cents)}</td></tr>${deliverySavings}${discount}<tr><td style="font-size:18px;font-weight:bold;border-top:1px solid #171717;padding-top:12px">TOTAL</td><td style="font-size:18px;font-weight:bold;border-top:1px solid #171717;padding-top:12px;text-align:right;white-space:nowrap">${money(o.total_cents)}</td></tr></table>${int(o.delivery_savings_cents)>0?`<p style="font-weight:bold;color:#146b2f">You saved ${money(o.delivery_savings_cents)} on delivery.</p>`:''}<p style="line-height:1.5"><strong>Deliver to</strong><br>${htmlEscape(o.address||'Not provided')}</p><p style="line-height:1.5"><strong>Payment</strong><br>${htmlEscape(paymentLabel(o.payment_method))}</p><p style="margin:24px 0"><a href="${orderStatusUrl(o)}" style="display:block;background:#111;color:#fff;text-align:center;text-decoration:none;font-weight:bold;padding:14px;border-radius:10px">VIEW MY ORDER</a></p><p style="font-size:13px;line-height:1.5;color:#4f4f4f">Your driver contact button will appear on the live order page after a driver is assigned.</p></div></div></body></html>`;
+  return `<!doctype html><html><body style="margin:0;background:#f2f2ef;color:#171717;font-family:Arial,sans-serif"><div style="max-width:600px;margin:0 auto;padding:24px 14px"><div style="background:#fff;border-radius:18px;padding:24px"><div style="font-size:12px;font-weight:bold;letter-spacing:.08em">POUCHES LOCAL</div><h1 style="font-size:26px;margin:8px 0">Order #${o.order_no} confirmed</h1><p style="line-height:1.5">Thanks${o.customer_name?`, ${htmlEscape(o.customer_name)}`:''}. We received your order and will keep the live order page updated.</p><table role="presentation" style="width:100%;border-collapse:collapse;margin:18px 0">${items}<tr><td style="padding-top:14px">Products</td><td style="padding-top:14px;text-align:right;white-space:nowrap">${money(o.subtotal_cents)}</td></tr><tr><td style="padding-top:7px">${htmlEscape(o.zone_name_snapshot||'Delivery')} Delivery</td><td style="padding-top:7px;text-align:right;white-space:nowrap">${money(o.normal_delivery_fee_cents||o.delivery_fee_cents)}</td></tr>${deliverySavings}${discount}<tr><td style="font-size:18px;font-weight:bold;border-top:1px solid #171717;padding-top:12px">TOTAL</td><td style="font-size:18px;font-weight:bold;border-top:1px solid #171717;padding-top:12px;text-align:right;white-space:nowrap">${money(o.total_cents)}</td></tr></table>${int(o.delivery_savings_cents)>0?`<p style="font-weight:bold;color:#146b2f">You saved ${money(o.delivery_savings_cents)} on delivery.</p>`:''}<p style="line-height:1.5"><strong>Deliver to</strong><br>${htmlEscape(o.address||'Not provided')}</p><p style="line-height:1.5"><strong>Payment</strong><br>${htmlEscape(paymentLabel(o.payment_method))}</p><p style="margin:24px 0"><a href="${orderStatusUrl(o)}" style="display:block;background:#111;color:#fff;text-align:center;text-decoration:none;font-weight:bold;padding:14px;border-radius:10px">VIEW MY ORDER</a></p><p style="font-size:13px;line-height:1.5;color:#4f4f4f">Your driver contact button will appear on the live order page after a driver is assigned.</p></div></div></body></html>`;
 }
 async function sendOrderConfirmation(oid) {
   const o=orderFull(oid);
@@ -1109,7 +1122,7 @@ async function sendOrderConfirmation(oid) {
     return {skipped:true,reason:'Email service not configured'};
   }
   try{
-    const r=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:ORDER_EMAIL_FROM,to:[o.customer_email],subject:`PouchesVic order #${o.order_no} confirmed`,html:orderConfirmationHtml(o),...(ORDER_EMAIL_REPLY_TO?{reply_to:ORDER_EMAIL_REPLY_TO}:{})})});
+    const r=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:ORDER_EMAIL_FROM,to:[o.customer_email],subject:`Pouches Local order #${o.order_no} confirmed`,html:orderConfirmationHtml(o),...(ORDER_EMAIL_REPLY_TO?{reply_to:ORDER_EMAIL_REPLY_TO}:{})})});
     const body=await r.text();
     if(!r.ok) throw new Error(`Email provider ${r.status}: ${body.slice(0,300)}`);
     run("UPDATE orders SET confirmation_email_status='sent',confirmation_email_message='',updated_at=? WHERE id=?",now(),oid);
@@ -1139,7 +1152,7 @@ function territorySnapshot(tid,lane='main') {
     WHERE tp.territory_id=? AND tp.listed=1 AND p.active=1 AND p.archived=0 AND di.sellable_qty>0
     ORDER BY tp.featured DESC,tp.sort_order,p.brand,p.flavor`,storefrontDriverId,tid):[];
   const windows=all('SELECT id,label,start_time,end_time,days_json,capacity,sort_order FROM delivery_windows WHERE territory_id=? AND active=1 ORDER BY sort_order,start_time',tid);
-  return {territory,storefront:{lane:text(lane)||'main',driver_id:storefrontDriverId},tiers,zones,products,windows,settings:{mapbox_public_token:setting('mapbox_public_token',''),payment_cash_enabled:setting('payment_cash_enabled','true')==='true',payment_etransfer_enabled:setting('payment_etransfer_enabled','true')==='true',payment_methods:customerPaymentMethods(),customer_discount_label:setting('customer_discount_label','Customer Appreciation Discount'),minimum_order_qty:Math.max(1,int(setting('minimum_order_qty','1'),1)),round_down_to_cents:int(setting('round_down_to_cents','500'),500),age_acknowledgement_text:setting('age_acknowledgement_text','')}};
+  return {territory,storefront:{lane:text(lane)||'main',driver_id:storefrontDriverId,main_driver_id:territory.main_driver_id||territory.default_driver_id||null,small_orders_driver_id:territory.small_orders_driver_id||null,small_order_max_qty:Math.max(1,int(territory.small_order_max_qty,4))},tiers,zones,products,windows,settings:{mapbox_public_token:setting('mapbox_public_token',''),payment_cash_enabled:setting('payment_cash_enabled','true')==='true',payment_etransfer_enabled:setting('payment_etransfer_enabled','true')==='true',payment_methods:customerPaymentMethods(),customer_discount_label:setting('customer_discount_label','Customer Appreciation Discount'),minimum_order_qty:Math.max(1,int(setting('minimum_order_qty','1'),1)),round_down_to_cents:int(setting('round_down_to_cents','500'),500),age_acknowledgement_text:setting('age_acknowledgement_text','')}};
 }
 function adminBootstrap() {
   return {territories:all('SELECT * FROM territories ORDER BY archived,name'),settings:Object.fromEntries(all('SELECT key,value FROM settings').map(x=>[x.key,x.value]))};
@@ -1150,7 +1163,7 @@ function territoryAdmin(tid) {
     territory,
     tiers:all('SELECT *,COALESCE(unit_price_cents,CAST(ROUND(unit_price*100) AS INTEGER)) resolved_unit_price_cents FROM pricing_tiers WHERE territory_id=? ORDER BY active DESC,sort_order,min_qty',tid),
     zones:all('SELECT *,COALESCE(fee_cents,CAST(ROUND(fee*100) AS INTEGER)) resolved_fee_cents FROM delivery_zones WHERE territory_id=? ORDER BY active DESC,sort_order,name',tid),
-    drivers:all(`SELECT d.*,m.role membership_role FROM drivers d
+    drivers:all(`SELECT d.*,m.role membership_role,m.can_manage_hours FROM drivers d
       JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1
       ORDER BY d.archived,d.active DESC,d.name`,tid).map(d=>({...d,lifetime_deliveries:finalOperations.lifetimeDeliveries(d.id)?.lifetime_deliveries||0})),
     rules:all(`SELECT r.*,fd.name from_driver_name,td.name to_driver_name,z.name zone_name FROM settlement_rules r LEFT JOIN drivers fd ON fd.id=r.from_driver_id LEFT JOIN drivers td ON td.id=r.to_driver_id LEFT JOIN delivery_zones z ON z.id=r.zone_id WHERE r.territory_id=? ORDER BY r.archived,r.sort_order,r.name`,tid),
@@ -1170,7 +1183,7 @@ function publicOrderByToken(tok) {
   if(!o)return null;
   const items=all('SELECT product_name_snapshot,brand_snapshot,strength_snapshot,qty,unit_price_cents,line_total_cents FROM order_items WHERE order_id=?',o.id);
   const events=all('SELECT event_type,message,created_at FROM order_events WHERE order_id=? AND visible_to_customer=1 ORDER BY created_at',o.id);
-  const msg=`Hi, this is ${o.customer_name||'a customer'} regarding PouchesVic order #${o.order_no}. I need to make a change or ask a question about my current order.`;
+  const msg=`Hi, this is ${o.customer_name||'a customer'} regarding Pouches Local order #${o.order_no}. I need to make a change or ask a question about my current order.`;
   return {...o,items,events,text_driver_href:o.customer_contact_number?smsHref(o.customer_contact_number,msg):''};
 }
 
@@ -1189,22 +1202,23 @@ function saveTerritoryEntity(kind,tid,b) {
     else run(`INSERT INTO delivery_zones(id,territory_id,name,color_label,fee,fee_cents,free_at_qty,active,description,rule_notes,geojson,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,id(),tid,text(b.name),text(b.color_label),dollars(feeC),feeC,b.free_at_qty===''||b.free_at_qty==null?null:int(b.free_at_qty),bool(b.active??true),text(b.description),text(b.rule_notes),geo,int(b.sort_order));
   }
   if(kind==='driver'){
+    if(text(b.pin)&&!/^\d{4}$/.test(text(b.pin)))throw new Error('Driver PIN must be exactly 4 digits.');
     let driverId=text(b.id);
     if(driverId){
       const pinClause=text(b.pin)?',pin_hash=?':'';
       const args=[text(b.name),bool(b.active),text(b.role)||'driver',text(b.email),normalizePhone(b.phone),normalizePhone(b.customer_contact_number),text(b.notes),t];
-      if(text(b.pin))args.push(encodePin(b.pin)); args.push(driverId,tid);
-      run(`UPDATE drivers SET name=?,active=?,role=?,email=?,phone=?,customer_contact_number=?,notes=?,updated_at=?${pinClause} WHERE id=? AND territory_id=?`,...args);
+      if(text(b.pin))args.push(encodePin(b.pin)); args.push(driverId);
+      run(`UPDATE drivers SET name=?,active=?,role=?,email=?,phone=?,customer_contact_number=?,notes=?,updated_at=?${pinClause} WHERE id=?`,...args);
     } else {
       driverId=id();
       run(`INSERT INTO drivers(id,territory_id,name,active,archived,role,email,phone,customer_contact_number,notes,pin_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         driverId,tid,text(b.name),bool(b.active??true),0,text(b.role)||'driver',text(b.email),normalizePhone(b.phone),normalizePhone(b.customer_contact_number),text(b.notes),text(b.pin)?encodePin(b.pin):'',t,t);
       run('UPDATE drivers SET personal_use_rate_cents=0,personal_rate_driver_editable=0 WHERE id=?',driverId);
     }
-    const terr=one('SELECT default_driver_id FROM territories WHERE id=?',tid);
+    const terr=one('SELECT default_driver_id,main_driver_id FROM territories WHERE id=?',tid);
     const current=terr?.default_driver_id?one('SELECT id FROM drivers WHERE id=? AND active=1 AND archived=0',terr.default_driver_id):null;
-    if(!current && bool(b.active??true)) run('UPDATE territories SET default_driver_id=?,updated_at=? WHERE id=?',driverId,t,tid);
-    run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,created_at,updated_at) VALUES(?,?,?,1,?,?) ON CONFLICT(driver_id,territory_id) DO UPDATE SET active=1,updated_at=excluded.updated_at`,driverId,tid,text(b.membership_role)||'driver',t,t);
+    if(!current && bool(b.active??true)) run('UPDATE territories SET default_driver_id=?,main_driver_id=COALESCE(main_driver_id,?),updated_at=? WHERE id=?',driverId,driverId,t,tid);
+    run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,can_manage_hours,created_at,updated_at) VALUES(?,?,?,1,?,?,?) ON CONFLICT(driver_id,territory_id) DO UPDATE SET role=excluded.role,active=1,can_manage_hours=excluded.can_manage_hours,updated_at=excluded.updated_at`,driverId,tid,text(b.membership_role)||'driver',bool(b.can_manage_hours),t,t);
   }
   if(kind==='rule'){
     const amountC=b.amount_cents!=null?int(b.amount_cents):cents(b.amount);
@@ -1220,7 +1234,7 @@ function archiveEntity(kind,tid,eid) {
   if(kind==='driver'){
     const t=now();
     run('UPDATE drivers SET archived=1,active=0,updated_at=? WHERE id=? AND territory_id=?',t,eid,tid);
-    const terr=one('SELECT default_driver_id FROM territories WHERE id=?',tid);
+    const terr=one('SELECT default_driver_id,main_driver_id FROM territories WHERE id=?',tid);
     if(terr?.default_driver_id===eid){
       const repl=one(`SELECT id FROM drivers WHERE territory_id=? AND active=1 AND archived=0 ORDER BY CASE WHEN role='operations_admin' THEN 0 ELSE 1 END,created_at,name LIMIT 1`,tid);
       run('UPDATE territories SET default_driver_id=?,updated_at=? WHERE id=?',repl?.id||null,t,tid);
@@ -1242,6 +1256,7 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/'||url.pathname==='/index.html'||url.pathname.startsWith('/order/')) return serve(res,'index.html');
     if(url.pathname==='/admin'||url.pathname==='/admin.html') return serve(res,'admin.html');
     if(url.pathname==='/driver'||url.pathname==='/driver.html') return serve(res,'driver.html');
+    const localStorefrontPath=url.pathname.match(/^\/([a-z0-9-]+)\/?$/);if(localStorefrontPath&&publicTerritory(decodeURIComponent(localStorefrontPath[1])))return serve(res,'index.html');
     if(url.pathname==='/sw.js'){
       const p=path.join(__dirname,'sw.js');
       if(!fs.existsSync(p))return send(res,404,'Not found','text/plain; charset=utf-8');
@@ -1345,6 +1360,7 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/api/admin/territories'&&req.method==='POST'){
       const b=await bodyJson(req),tid=id(),t=now();
       run('INSERT INTO territories(id,name,slug,active,archived,domain,currency,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',tid,text(b.name),text(b.slug),bool(b.active??true),0,text(b.domain),'CAD',t,t);
+      finalOperations.saveSchedule(tid,{timezone:text(b.timezone)||'America/Vancouver',hours:Array.from({length:7},(_,weekday)=>({weekday,open_minute:540,close_minute:1020}))});
       [[1,4,2500],[5,9,2000],[10,19,1500],[20,null,1250]].forEach((x,i)=>run('INSERT INTO pricing_tiers(id,territory_id,min_qty,max_qty,unit_price,unit_price_cents,active,sort_order) VALUES(?,?,?,?,?,?,?,?)',id(),tid,x[0],x[1],dollars(x[2]),x[2],1,i));
       return send(res,201,{id:tid});
     }
@@ -1357,11 +1373,10 @@ const server=http.createServer(async(req,res)=>{
 
     const dispatchInfo=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/dispatch-settings$/);
     if(dispatchInfo&&req.method==='PUT'){
-      const b=await bodyJson(req),tid=decodeURIComponent(dispatchInfo[1]),driverId=text(b.default_driver_id);
-      if(driverId && !one(`SELECT d.id FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id
-        WHERE d.id=? AND m.territory_id=? AND m.active=1 AND d.active=1 AND d.archived=0`,driverId,tid)) throw new Error('Choose an active driver from this city');
-      run('UPDATE territories SET auto_dispatch_enabled=?,default_driver_id=?,updated_at=? WHERE id=?',bool(b.auto_dispatch_enabled),driverId||null,now(),tid);
-      return send(res,200,{ok:true});
+      const b=await bodyJson(req),tid=decodeURIComponent(dispatchInfo[1]),mainId=text(b.main_driver_id||b.default_driver_id),smallId=text(b.small_orders_driver_id),max=Math.max(1,int(b.small_order_max_qty,4)),cutoff=Math.max(0,Math.min(180,int(b.same_day_cutoff_minutes,15)));
+      const valid=id=>!id||!!one(`SELECT d.id FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id WHERE d.id=? AND m.territory_id=? AND m.active=1 AND d.active=1 AND d.archived=0`,id,tid);
+      if(!valid(mainId)||!valid(smallId))throw new Error('Choose active drivers who belong to this Local.');if(mainId&&smallId&&mainId===smallId)throw new Error('Main Shop and Small Orders must use different drivers.');
+      run('UPDATE territories SET auto_dispatch_enabled=?,default_driver_id=?,main_driver_id=?,small_orders_driver_id=?,small_order_max_qty=?,same_day_cutoff_minutes=?,updated_at=? WHERE id=?',bool(b.auto_dispatch_enabled??true),mainId||null,mainId||null,smallId||null,max,cutoff,now(),tid);return send(res,200,{ok:true});
     }
 
     const storefrontInfo=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/storefront-info$/);
@@ -1380,7 +1395,7 @@ const server=http.createServer(async(req,res)=>{
     }
     const membershipsRoute=url.pathname.match(/^\/api\/admin\/drivers\/([^/]+)\/memberships$/);
     if(membershipsRoute&&req.method==='GET')return send(res,200,finalOperations.memberships(decodeURIComponent(membershipsRoute[1])));
-    if(membershipsRoute&&req.method==='PUT'){const driverId=decodeURIComponent(membershipsRoute[1]),b=await bodyJson(req),rows=Array.isArray(b.memberships)?b.memberships:[],stamp=now();db.transaction(()=>{run('UPDATE driver_territory_memberships SET active=0,updated_at=? WHERE driver_id=?',stamp,driverId);for(const m of rows){if(!one('SELECT 1 FROM territories WHERE id=? AND active=1 AND archived=0',text(m.territory_id)))throw new Error('Choose an active area.');run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,created_at,updated_at) VALUES(?,?,?,1,?,?) ON CONFLICT(driver_id,territory_id) DO UPDATE SET role=excluded.role,active=1,updated_at=excluded.updated_at`,driverId,text(m.territory_id),['driver','supervisor'].includes(text(m.role))?text(m.role):'driver',stamp,stamp);}})();return send(res,200,finalOperations.memberships(driverId));}
+    if(membershipsRoute&&req.method==='PUT'){const driverId=decodeURIComponent(membershipsRoute[1]),b=await bodyJson(req),rows=Array.isArray(b.memberships)?b.memberships:[],stamp=now();db.transaction(()=>{run('UPDATE driver_territory_memberships SET active=0,updated_at=? WHERE driver_id=?',stamp,driverId);for(const m of rows){if(!one('SELECT 1 FROM territories WHERE id=? AND active=1 AND archived=0',text(m.territory_id)))throw new Error('Choose an active area.');run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,can_manage_hours,created_at,updated_at) VALUES(?,?,?,1,?,?,?) ON CONFLICT(driver_id,territory_id) DO UPDATE SET role=excluded.role,active=1,can_manage_hours=excluded.can_manage_hours,updated_at=excluded.updated_at`,driverId,text(m.territory_id),['driver','supervisor'].includes(text(m.role))?text(m.role):'driver',bool(m.can_manage_hours),stamp,stamp);}})();return send(res,200,finalOperations.memberships(driverId));}
     const scheduleInfo=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/schedule$/);
     if(scheduleInfo&&req.method==='GET')return send(res,200,{...finalOperations.scheduleConfig(decodeURIComponent(scheduleInfo[1])),hours:all('SELECT * FROM territory_weekly_hours WHERE territory_id=? ORDER BY weekday,open_minute',decodeURIComponent(scheduleInfo[1]))});
     if(scheduleInfo&&req.method==='PUT')return send(res,200,finalOperations.saveSchedule(decodeURIComponent(scheduleInfo[1]),await bodyJson(req)));
@@ -1541,8 +1556,8 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/api/driver/options'&&req.method==='GET'){
       const tid=text(url.searchParams.get('territory_id'));
       const terr=tid?one('SELECT id,name,slug FROM territories WHERE id=? AND active=1 AND archived=0',tid):publicTerritory(text(url.searchParams.get('territory_slug'))||'victoria');
-      if(!terr)return send(res,404,{error:'City unavailable'});
-      return send(res,200,{territory:terr,drivers:all(`SELECT d.id,d.name,d.role,m.role membership_role FROM drivers d
+      if(!terr)return send(res,404,{error:'Local unavailable'});
+      return send(res,200,{territory:terr,drivers:all(`SELECT d.id,d.name,d.role,m.role membership_role,m.can_manage_hours FROM drivers d
         JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1
         WHERE d.active=1 AND d.archived=0
         ORDER BY CASE WHEN m.role='supervisor' OR d.role='operations_admin' THEN 0 ELSE 1 END,d.name`,terr.id)});
@@ -1571,8 +1586,16 @@ const server=http.createServer(async(req,res)=>{
         for(const tid of territoryIds)driverInventory.reconcileTerritory(tid);
         const products=territoryIds.length?all(`SELECT p.id,p.brand,p.flavor,p.strength,di.territory_id,di.sellable_qty inventory,tp.listed,di.reserved_qty,di.check_stock_qty FROM products p JOIN driver_inventory di ON di.product_id=p.id AND di.driver_id=? JOIN territory_products tp ON tp.product_id=p.id AND tp.territory_id=di.territory_id WHERE di.territory_id IN (${marks}) AND p.active=1 AND p.archived=0 ORDER BY p.brand,p.flavor`,driver.id,...territoryIds):[];
         const zones=territoryIds.length?all(`SELECT id,territory_id,name,fee_cents,fee,free_at_qty FROM delivery_zones WHERE territory_id IN (${marks}) AND active=1 ORDER BY sort_order,name`,...territoryIds):[];
-        const territory_drivers=territoryIds.length?all(`SELECT d.id,d.name,m.territory_id,m.role membership_role FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id WHERE m.territory_id IN (${marks}) AND m.active=1 AND d.active=1 AND d.archived=0 ORDER BY d.name`,...territoryIds):[];
+        const territory_drivers=territoryIds.length?all(`SELECT d.id,d.name,m.territory_id,m.role membership_role,m.can_manage_hours FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id WHERE m.territory_id IN (${marks}) AND m.active=1 AND d.active=1 AND d.archived=0 ORDER BY d.name`,...territoryIds):[];
         return send(res,200,{driver:{...driver,lifetime_deliveries:finalOperations.lifetimeDeliveries(driver.id)?.lifetime_deliveries||0},territory:one('SELECT * FROM territories WHERE id=?',driver.territory_id),memberships,territory_drivers,products,zones,orders,archived_orders,supervisor_accounts:supervisorLedger.mayDriverView(driver)?supervisorLedger.report():null,history_policy:{terminal_hours:12,archive_days:15}});
+      }
+      if(url.pathname==='/api/driver/local-hours'&&req.method==='GET'){
+        const tid=text(url.searchParams.get('territory_id')),membership=one('SELECT * FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',driver.id,tid);if(!membership||!membership.can_manage_hours)return send(res,403,{error:'Admin has not enabled Local-hours access for this driver.'});
+        return send(res,200,{territory:one('SELECT id,name,slug,timezone,same_day_cutoff_minutes FROM territories WHERE id=?',tid),hours:all('SELECT * FROM territory_weekly_hours WHERE territory_id=? AND active=1 ORDER BY weekday,open_minute',tid)});
+      }
+      if(url.pathname==='/api/driver/local-hours'&&req.method==='PUT'){
+        const b=await bodyJson(req),tid=text(b.territory_id),membership=one('SELECT * FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',driver.id,tid);if(!membership||!membership.can_manage_hours)return send(res,403,{error:'Admin has not enabled Local-hours access for this driver.'});
+        const result=finalOperations.saveSchedule(tid,{timezone:text(b.timezone)||one('SELECT timezone FROM territories WHERE id=?',tid)?.timezone,hours:Array.isArray(b.hours)?b.hours:[]});return send(res,200,result);
       }
       if(url.pathname==='/api/driver/push-config'&&req.method==='GET'){
         return send(res,200,{
@@ -1605,7 +1628,7 @@ const server=http.createServer(async(req,res)=>{
           await sendDriverPush(driver.id,o.id);
         }else{
           const subs=all('SELECT * FROM push_subscriptions WHERE driver_id=?',driver.id);
-          const payload=JSON.stringify({title:'PouchesVic test alert',body:'Notifications are working.',url:'/driver'});
+          const payload=JSON.stringify({title:'Pouches Local test alert',body:'Notifications are working.',url:'/driver'});
           for(const row of subs){
             const sub=safeJson(row.subscription_json,null);
             if(sub)await webpush.sendNotification(sub,payload,{TTL:300,urgency:'high'});
@@ -1697,4 +1720,4 @@ const server=http.createServer(async(req,res)=>{
   }
 });
 
-server.listen(PORT,'0.0.0.0',()=>console.log(`Pouches Vic running on ${PORT}`));
+server.listen(PORT,'0.0.0.0',()=>console.log(`Pouches Local running on ${PORT}`));

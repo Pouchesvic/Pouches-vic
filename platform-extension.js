@@ -328,8 +328,10 @@ function ensurePlatform() {
   const t = now();
   if (!one("SELECT 1 FROM platform_businesses WHERE id='primary'")) {
     run(`INSERT INTO platform_businesses(id,name,slug,active,config_json,created_at,updated_at)
-         VALUES('primary','Pouches Vic','pouches-vic',1,?,?,?)`, jsonText(defaultProfile()), t, t);
+         VALUES('primary','Pouches Local','pouches-local',1,?,?,?)`, jsonText(defaultProfile()), t, t);
   }
+  const existingBusiness=one("SELECT * FROM platform_businesses WHERE id='primary'");
+  if(existingBusiness&&existingBusiness.name==='Pouches Vic'){const cfg={...defaultProfile(),...(safeJson(existingBusiness.config_json,{})||{})};if(!cfg.business_name||cfg.business_name==='Pouches Vic')cfg.business_name='Pouches Local';run("UPDATE platform_businesses SET name='Pouches Local',slug='pouches-local',config_json=?,updated_at=? WHERE id='primary'",jsonText(cfg),t);}
   const modules = defaultModules();
   for (const [key, meta] of Object.entries(modules)) {
     if (!one('SELECT 1 FROM platform_modules WHERE module_key=?', key)) {
@@ -347,7 +349,7 @@ function ensurePlatform() {
 function defaultProfile() {
   return {
     generic_business_mode: false,
-    business_name: 'Pouches Vic',
+    business_name: 'Pouches Local',
     business_tagline: 'LOCAL • SIMPLE • FAST',
     hero_title: 'YOUR POUCHES. RIGHT HERE.',
     shop_button: 'SHOP POUCHES',
@@ -390,7 +392,7 @@ function defaultModules() {
 function getProfile() {
   ensurePlatform();
   const row = one("SELECT config_json,name FROM platform_businesses WHERE id='primary'");
-  return { ...defaultProfile(), ...(safeJson(row?.config_json, {}) || {}), business_name: safeJson(row?.config_json, {})?.business_name || row?.name || 'Pouches Vic' };
+  return { ...defaultProfile(), ...(safeJson(row?.config_json, {}) || {}), business_name: safeJson(row?.config_json, {})?.business_name || row?.name || 'Pouches Local' };
 }
 function getModules() {
   ensurePlatform();
@@ -1145,11 +1147,11 @@ function businessOrderNotificationHtml(order) {
   const timezone=text(order.territory_timezone_snapshot)||'America/Vancouver',today=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()).split('/').reverse().join('-');
   const requested=text(order.requested_delivery_date),future=requested&&requested>today;
   const requestedDate=requested?new Intl.DateTimeFormat('en-CA',{timeZone:'UTC',weekday:'long',month:'long',day:'numeric'}).format(new Date(`${requested}T12:00:00Z`)):'';
-  const flags=[future?`<div style="background:#171717;color:#fff;padding:12px 14px;margin:8px 0;font-weight:bold">FUTURE DELIVERY<br><span style="font-weight:normal">${escapeHtml(requestedDate)}${order.requested_window_label?` • ${escapeHtml(order.requested_window_label)}`:''}</span></div>`:'',order.schedule_type==='outside_hours'?`<div style="background:#ffcf33;padding:12px 14px;margin:8px 0;font-weight:bold">OUTSIDE-HOURS REQUEST — CONTACT CUSTOMER<br><span style="font-weight:normal">${escapeHtml(order.outside_hours_message)}</span></div>`:'',order.manual_location?`<div style="background:#ffcf33;padding:12px 14px;margin:8px 0;font-weight:bold">LOCATION NEEDS CONFIRMATION<br><span style="font-weight:normal">${escapeHtml(order.meeting_instructions)}</span></div>`:''].join('');
+  const flags=[future?`<div style="background:#171717;color:#fff;padding:12px 14px;margin:8px 0;font-weight:bold">FUTURE DELIVERY<br><span style="font-weight:normal">${escapeHtml(requestedDate)}${order.requested_window_label?` • ${escapeHtml(order.requested_window_label)}`:''}</span></div>`:'',order.schedule_type==='late_same_day'?`<div style="background:#ffcf33;padding:12px 14px;margin:8px 0;font-weight:bold">LATE ORDER — TODAY NOT GUARANTEED<br><span style="font-weight:normal">Delivery may move to the next open day.</span></div>`:'',order.schedule_type==='outside_hours'?`<div style="background:#ffcf33;padding:12px 14px;margin:8px 0;font-weight:bold">OUTSIDE-HOURS REQUEST — CONTACT CUSTOMER<br><span style="font-weight:normal">${escapeHtml(order.outside_hours_message)}</span></div>`:'',order.manual_location?`<div style="background:#ffcf33;padding:12px 14px;margin:8px 0;font-weight:bold">LOCATION NEEDS CONFIRMATION<br><span style="font-weight:normal">${escapeHtml(order.meeting_instructions)}</span></div>`:''].join('');
   const itemRows = items.map(x => `<tr><td style="padding:8px 0;border-bottom:1px solid #ddd">${int(x.qty)} × ${escapeHtml(x.brand_snapshot)} ${escapeHtml(x.product_name_snapshot)}${x.strength_snapshot?` • ${escapeHtml(displayStrength(x.strength_snapshot))}`:''}</td><td style="padding:8px 0;border-bottom:1px solid #ddd;text-align:right">${money(x.line_total_cents)}</td></tr>`).join('');
   return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#171717"><div style="max-width:640px;margin:auto"><h1>New order #${escapeHtml(order.order_no)}</h1>${flags}<p><b>Requested delivery:</b> ${escapeHtml(requestedDate||'Not recorded')}${order.requested_window_label?` • ${escapeHtml(order.requested_window_label)}`:''}</p><h2>Customer</h2><p style="font-size:18px"><b>${escapeHtml(order.customer_name||'Customer')}</b><br>${escapeHtml(order.customer_phone||'')}${order.address?`<br>${escapeHtml(order.address)}`:''}${order.customer_email?`<br>${escapeHtml(order.customer_email)}`:''}</p>${order.delivery_notes?`<p><b>Delivery Notes</b><br>${escapeHtml(order.delivery_notes)}</p>`:''}<table style="width:100%;border-collapse:collapse">${itemRows}<tr><td style="padding-top:12px">Products</td><td style="padding-top:12px;text-align:right">${money(order.subtotal_cents)}</td></tr><tr><td>Delivery${order.zone_name_snapshot?` • ${escapeHtml(order.zone_name_snapshot)}`:''}</td><td style="text-align:right">${order.final_total_pending?'To be confirmed':money(order.delivery_fee_cents)}</td></tr>${!order.final_total_pending&&int(order.customer_discount_cents)>0?`<tr><td>Customer Appreciation</td><td style="text-align:right">−${money(order.customer_discount_cents)}</td></tr>`:''}<tr><td style="font-size:18px;font-weight:bold;padding-top:9px">FINAL TOTAL</td><td style="font-size:18px;font-weight:bold;padding-top:9px;text-align:right">${order.final_total_pending?'To be confirmed':money(order.total_cents)}</td></tr></table><p><b>Payment:</b> ${escapeHtml(order.payment_method||'Not specified')}${order.payment_note?`<br>${escapeHtml(order.payment_note)}`:''}</p><p><a href="${PUBLIC_BASE_URL}/admin">Open Control Room</a></p></div></body></html>`;
 }
-function businessOrderSubject(order){const timezone=text(order.territory_timezone_snapshot)||'America/Vancouver',parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value])),today=`${parts.year}-${parts.month}-${parts.day}`;return order.requested_delivery_date>today?`NEW FUTURE ORDER — #${order.order_no}`:`New PouchesVic order #${order.order_no}`;}
+function businessOrderSubject(order){const timezone=text(order.territory_timezone_snapshot)||'America/Vancouver',parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value])),today=`${parts.year}-${parts.month}-${parts.day}`;return order.requested_delivery_date>today?`NEW FUTURE ORDER — #${order.order_no}`:`New Pouches Local order #${order.order_no}`;}
 async function sendBusinessNewOrderNotifications(orderId) {
   if (!ensurePlatform()) return { sent:0, skipped:0 };
   const order = one('SELECT * FROM orders WHERE id=?', orderId);
@@ -1186,7 +1188,7 @@ async function sendVictoriaTestEmail(territoryId){
   const recipient=notificationRecipients(territoryId).find(x=>x.enabled&&x.email.toLowerCase()==='vicpouches@protonmail.com');if(!recipient)throw new Error('Victoria order email is disabled or not assigned to Victoria.');
   const testId=id(),attempted=now();run("INSERT INTO platform_email_test_deliveries(id,territory_id,email,status,attempted_at,error) VALUES(?,?,?,?,?,'')",testId,territoryId,recipient.email,'pending',attempted);
   if(!RESEND_API_KEY||!ORDER_EMAIL_FROM){const error='Email delivery is not configured: RESEND_API_KEY or ORDER_EMAIL_FROM is missing.';run("UPDATE platform_email_test_deliveries SET status='not_configured',error=? WHERE id=?",error,testId);return {ok:false,status:'not_configured',error};}
-  try{const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:ORDER_EMAIL_FROM,to:[recipient.email],subject:'PouchesVic Victoria test email',html:'<h1>PouchesVic Victoria email test</h1><p>If you received this, Victoria business-order email delivery is configured.</p>',...(ORDER_EMAIL_REPLY_TO?{reply_to:ORDER_EMAIL_REPLY_TO}:{})})});if(!response.ok)throw new Error(`Email provider returned ${response.status}: ${(await response.text()).slice(0,300)}`);run("UPDATE platform_email_test_deliveries SET status='sent',sent_at=?,error='' WHERE id=?",now(),testId);return {ok:true,status:'sent',email:recipient.email};}catch(e){const error=text(e.message).slice(0,500);run("UPDATE platform_email_test_deliveries SET status='failed',error=? WHERE id=?",error,testId);return {ok:false,status:'failed',error};}
+  try{const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:ORDER_EMAIL_FROM,to:[recipient.email],subject:'Pouches Local Victoria test email',html:'<h1>Pouches Local Victoria email test</h1><p>If you received this, Victoria business-order email delivery is configured.</p>',...(ORDER_EMAIL_REPLY_TO?{reply_to:ORDER_EMAIL_REPLY_TO}:{})})});if(!response.ok)throw new Error(`Email provider returned ${response.status}: ${(await response.text()).slice(0,300)}`);run("UPDATE platform_email_test_deliveries SET status='sent',sent_at=?,error='' WHERE id=?",now(),testId);return {ok:true,status:'sent',email:recipient.email};}catch(e){const error=text(e.message).slice(0,500);run("UPDATE platform_email_test_deliveries SET status='failed',error=? WHERE id=?",error,testId);return {ok:false,status:'failed',error};}
 }
 
 // Core invokes this hook only from successful order-creation routes. Delivery rows make
@@ -1488,7 +1490,8 @@ http.createServer = function patchedCreateServer(listener) {
       if (req.method === 'GET' && (url.pathname === '/driver' || url.pathname === '/driver.html')) {
         return send(res, 200, injectHtml('driver.html', '/platform-driver.js'), 'text/html; charset=utf-8');
       }
-      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html' || url.pathname.startsWith('/order/'))) {
+      const localStorefrontPath=url.pathname.match(/^\/([a-z0-9-]+)\/?$/),knownLocal=localStorefrontPath&&one('SELECT 1 FROM territories WHERE slug=? AND active=1 AND archived=0',decodeURIComponent(localStorefrontPath[1]));
+      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html' || url.pathname.startsWith('/order/') || knownLocal)) {
         return send(res, 200, injectHtml('index.html', '/platform-storefront.js'), 'text/html; charset=utf-8');
       }
       if (req.method === 'GET' && url.pathname === '/scanner') return serveFile(res, 'scanner.html', 'text/html; charset=utf-8');
