@@ -106,6 +106,7 @@ details.notice summary{font-weight:900;cursor:pointer}
 <div class="wrap">
   <div class="card head"><div class="logo">POUCHES VIC</div><select id="territorySelect" class="territory"></select></div>
   <div class="card hero"><div class="small"><b>LOCAL • SIMPLE • FAST</b></div><h1>YOUR POUCHES.<br>RIGHT HERE.</h1><button class="btn" id="shopBtn">SHOP POUCHES</button></div>
+  <div id="laneBanner"></div>
   <div class="serviceInfo">
     <div class="hoursLabel">HOURS</div>
     <div id="hoursValue" class="hoursValue">Hours posted here</div>
@@ -123,7 +124,7 @@ details.notice summary{font-weight:900;cursor:pointer}
   <div id="checkout"></div>
 </div></div>
 <script>
-let territories=[],data=null,cart={},currentSlug='victoria',activeBrand='';
+let territories=[],data=null,cart={},currentSlug='victoria',activeBrand='',storefrontLane=new URLSearchParams(location.search).get('lane')==='small'?'small':'main',cartTransferChecked=false;
 Object.defineProperties(window,{data:{configurable:true,get:()=>data},currentSlug:{configurable:true,get:()=>currentSlug},activeBrand:{configurable:true,get:()=>activeBrand}});
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -147,21 +148,33 @@ async function init(){
   if(!territories.some(t=>t.slug===currentSlug))currentSlug=territories[0]?.slug||'victoria';
   const areaLabel=t=>t.slug==='victoria'?'Greater Victoria / Langford / Sidney':t.slug==='sooke'?'Sooke / North Langford':t.name;
   $('territorySelect').innerHTML=territories.map(t=>`<option value="${esc(t.slug)}" ${t.slug===currentSlug?'selected':''}>${esc(areaLabel(t))}</option>`).join('');
-  $('territorySelect').onchange=()=>{currentSlug=$('territorySelect').value;cart={};activeBrand='';load();};
+  $('territorySelect').onchange=()=>{currentSlug=$('territorySelect').value;if(currentSlug!=='victoria')storefrontLane='main';cart={};activeBrand='';load();};
   $('shopBtn').onclick=()=>$('shop').scrollIntoView({behavior:'smooth'});
-  $('reviewBtn').onclick=openCart;
+  $('reviewBtn').onclick=reviewOrder;
   $('closeBtn').onclick=closeCart;
   $('sheet').onclick=e=>{if(e.target===$('sheet'))closeCart();};
   await load();
 }
 async function load(){
-  data=await fetch('/api/public/territory/'+encodeURIComponent(currentSlug),{cache:'no-store'}).then(r=>r.json());
+  if(currentSlug!=='victoria')storefrontLane='main';
+  data=await fetch('/api/public/territory/'+encodeURIComponent(currentSlug)+'?lane='+encodeURIComponent(storefrontLane),{cache:'no-store'}).then(r=>r.json());
   $('hoursValue').textContent=data.territory?.operating_hours||'Hours not posted';
   $('sameDayText').textContent=data.territory?.same_day_text||'SAME-DAY DELIVERY';
   $('paymentNoteText').textContent=data.territory?.payment_note_text||'No upfront payment — pay when your order arrives.';
-  for(const pid of Object.keys(cart)){const p=productById(pid);if(!p)delete cart[pid];else cart[pid]=clampQty(pid,cart[pid]);}
-  renderBrands();renderProducts();updateCart();
+  let changed=false;for(const pid of Object.keys(cart)){const before=Number(cart[pid])||0,p=productById(pid);if(!p){delete cart[pid];changed=true}else{cart[pid]=clampQty(pid,cart[pid]);if(cart[pid]!==before)changed=true;if(!cart[pid])delete cart[pid];}}
+  if(!cartTransferChecked){cartTransferChecked=true;try{const saved=JSON.parse(sessionStorage.getItem('pv_cart_transfer')||'null');if(saved&&saved.slug===currentSlug&&saved.lane===storefrontLane){cart=saved.cart||{};sessionStorage.removeItem('pv_cart_transfer');for(const pid of Object.keys(cart)){const before=Number(cart[pid])||0,p=productById(pid);if(!p){delete cart[pid];changed=true}else{cart[pid]=clampQty(pid,cart[pid]);if(cart[pid]!==before)changed=true;if(!cart[pid])delete cart[pid];}}}}catch{sessionStorage.removeItem('pv_cart_transfer')}}
+  renderLaneBanner();renderBrands();renderProducts();updateCart();if(changed)setTimeout(()=>alert('Your cart was updated to match the cans this driver has available.'),50);
 }
+function renderLaneBanner(){
+  const box=$('laneBanner');if(!box)return;if(currentSlug!=='victoria'){box.innerHTML='';return;}
+  box.innerHTML=storefrontLane==='small'
+    ? `<div class="card" style="border:2px solid #111;text-align:center"><b style="font-size:20px">SMALL ORDERS • 1–4 CANS</b><div class="small" style="margin:6px 0 12px">Stock shown here is with the Small Orders driver.</div><button class="btn ghost" onclick="switchLane('main')">5+ CANS? MAIN SHOP</button></div>`
+    : `<div class="card" style="border:2px solid #111;text-align:center"><b style="font-size:20px">LESS THAN 5 CANS?</b><div class="small" style="margin:6px 0 12px">Use Small Orders for 1–4 cans.</div><button class="btn" onclick="switchLane('small')">OPEN SMALL ORDERS</button></div>`;
+}
+function switchLane(lane){
+  if(currentSlug!=='victoria')return;sessionStorage.setItem('pv_cart_transfer',JSON.stringify({slug:currentSlug,lane,cart}));const u=new URL(location.href);if(lane==='small')u.searchParams.set('lane','small');else u.searchParams.delete('lane');u.searchParams.set('territory','victoria');location.href=u.pathname+u.search;
+}
+function reviewOrder(){const q=cartQty();if(!q)return;if(currentSlug==='victoria'&&storefrontLane==='main'&&q<5){if(confirm('1–4 can orders use Small Orders. Move this cart there now?'))switchLane('small');return}if(currentSlug==='victoria'&&storefrontLane==='small'&&q>=5){if(confirm('5+ can orders use the Main Shop. Move this cart there now?'))switchLane('main');return}openCart();}
 function renderBrands(){
   const bs=[...new Set((data.products||[]).map(p=>p.brand).filter(Boolean))];
   if(activeBrand&&!bs.includes(activeBrand))activeBrand='';
@@ -212,7 +225,7 @@ async function openCart(){
     <div class="field"><label>DELIVERY ADDRESS</label><input id="customerAddress" autocomplete="street-address" placeholder="Start typing your street address"></div>
     <label class="checkrow"><input id="manualLocation" type="checkbox" onchange="toggleManualLocation()"><span>I can't enter my exact address</span></label>
     <div id="meetingWrap" class="field" hidden><label>TELL US WHERE TO MEET YOU</label><textarea id="meetingInstructions" placeholder="Construction site at Douglas & Bay. Use the side gate beside the gas station."></textarea></div>
-    <div class="two"><div class="field"><label>DELIVERY DATE</label><input id="deliveryDate" type="date" onchange="loadScheduleWindows()"></div><div class="field" id="windowWrap"><label>30-MINUTE WINDOW</label><select id="deliveryWindow"><option value="">Loading times…</option></select></div></div>
+    <div class="two"><div class="field"><label>DELIVERY DATE</label><input id="deliveryDate" type="date" onchange="loadScheduleWindows()"></div><div class="field" id="windowWrap"><label>45-MINUTE WINDOW</label><select id="deliveryWindow"><option value="">Loading times…</option></select></div></div>
     <label class="checkrow"><input id="outsideHours" type="checkbox" onchange="toggleOutsideHours()"><span>I need delivery outside normal hours</span></label>
     <div id="outsideWrap" class="field" hidden><label>TELL US WHEN YOU NEED DELIVERY</label><textarea id="outsideMessage" placeholder="Tell us the day and time that would work"></textarea></div>
     <div class="field"><label>DELIVERY NOTES <span class="small">(optional)</span></label><textarea id="deliveryNotes"></textarea></div>
@@ -232,9 +245,9 @@ function closeCart(){$('sheet').classList.remove('open');}
 async function submitOrder(){
   const entries=Object.entries(cart).filter(([,q])=>q>0),items=entries.map(([product_id,qty])=>({product_id,qty}));if(!items.length)return alert('Please choose at least one product.');
   const customer_name=$('customerName').value.trim(),customer_phone=$('customerPhone').value.trim(),customer_email=$('customerEmail').value.trim(),manual_location=$('manualLocation').checked,address=manual_location?'':$('customerAddress').value.trim(),meeting_instructions=$('meetingInstructions').value.trim(),delivery_notes=$('deliveryNotes').value.trim(),payment_method=$('paymentMethod')?.value||'',payment_note=$('paymentNote').value.trim(),zone_id=$('zone').value,outside=$('outsideHours').checked,date=$('deliveryDate').value,windowParts=($('deliveryWindow').value||'').split('|'),outside_hours_message=$('outsideMessage').value.trim();
-  const minimum=Math.max(1,Number(data.settings?.minimum_order_qty)||5);if(cartQty()<minimum)return alert(`Minimum order is ${minimum} cans.`);if(!customer_name||!customer_phone||(!manual_location&&!address))return alert('Please add your name, phone and delivery address.');if(manual_location&&!meeting_instructions)return alert('Tell us where to meet you.');if(!validateEmailField())return $('customerEmail').focus();if(!manual_location&&!zone_id)return alert('Select a suggested address so delivery can be confirmed.');if(outside&&!outside_hours_message)return alert('Tell us when you need delivery outside normal hours.');if(!outside&&windowParts.length<3)return alert('Choose a delivery date and 30-minute time window.');if(!$('ageAck').checked)return alert('Please confirm the age and ID requirement.');if(!payment_method)return alert('No payment method is currently available.');if(manual_location&&!confirm(`No exact address entered. We'll use your directions below and may call or text you to confirm the meeting spot.\n\nPLACE ORDER ANYWAY?`))return;
+  const qNow=cartQty(),minimum=currentSlug==='victoria'&&storefrontLane==='main'?5:1;if(qNow<minimum)return alert(`Minimum order here is ${minimum} cans.`);if(currentSlug==='victoria'&&storefrontLane==='small'&&qNow>4)return alert('Small Orders is for 1–4 cans. Move this cart to the Main Shop.');if(!customer_name||!customer_phone||(!manual_location&&!address))return alert('Please add your name, phone and delivery address.');if(manual_location&&!meeting_instructions)return alert('Tell us where to meet you.');if(!validateEmailField())return $('customerEmail').focus();if(!manual_location&&!zone_id)return alert('Select a suggested address so delivery can be confirmed.');if(outside&&!outside_hours_message)return alert('Tell us when you need delivery outside normal hours.');if(!outside&&windowParts.length<3)return alert('Choose a delivery date and 45-minute time window.');if(!$('ageAck').checked)return alert('Please confirm the age and ID requirement.');if(!payment_method)return alert('No payment method is currently available.');if(manual_location&&!confirm(`No exact address entered. We'll use your directions below and may call or text you to confirm the meeting spot.\n\nPLACE ORDER ANYWAY?`))return;
   const orderQty=cartQty(),snapshot=entries.map(([pid,qty])=>{const p=productById(pid);return {qty,brand:p?.brand||'',flavor:p?.flavor||'',strength:p?.strength||'',line_total_cents:unitPriceCents(orderQty,p)*qty}}),zone=data.zones.find(z=>z.id===zone_id);
-  const b={territory_slug:currentSlug,items,zone_id,customer_name,customer_phone,customer_email,address,manual_location,meeting_instructions,delivery_notes,payment_method,payment_note,age_acknowledged:true,schedule_type:outside?'outside_hours':'window',requested_delivery_date:date,requested_window_start:outside?null:windowParts[0],requested_window_end:outside?null:windowParts[1],outside_hours_message};const btn=$('submitBtn');btn.disabled=true;btn.textContent='PLACING ORDER…';
+  const b={territory_slug:currentSlug,storefront_lane:storefrontLane,items,zone_id,customer_name,customer_phone,customer_email,address,manual_location,meeting_instructions,delivery_notes,payment_method,payment_note,age_acknowledged:true,schedule_type:outside?'outside_hours':'window',requested_delivery_date:date,requested_window_start:outside?null:windowParts[0],requested_window_end:outside?null:windowParts[1],outside_hours_message};const btn=$('submitBtn');btn.disabled=true;btn.textContent='PLACING ORDER…';
   try{const r=await fetch('/api/public/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});const j=await r.json();if(!r.ok){btn.disabled=false;btn.textContent='PLACE ORDER';if(String(j.error||'').toLowerCase().includes('available'))await load();return alert(j.error||'Could not submit order');}
     const label=data.settings?.customer_discount_label||'Customer Appreciation',itemHtml=snapshot.map(x=>`<div class="receipt-line"><span>${x.qty} × ${esc(x.brand)} ${esc(x.flavor)}${x.strength?' • '+esc(displayStrength(x.strength)):''}</span><b>${centsMoney(x.line_total_cents)}</b></div>`).join('');cart={};updateCart();await load();
     const emailMessage=!customer_email?'':j.confirmation_email_status==='sent'?`<br><br>Confirmation emailed to ${esc(customer_email)}.`:`<br><br>Your order is confirmed. Email delivery is currently unavailable, so please save the live order link below.`;

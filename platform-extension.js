@@ -1225,10 +1225,10 @@ function settlementPeriodReport(period) {
   const pays=ids.length?all(`SELECT * FROM payments WHERE order_id IN (${ph}) AND status='received'`,...ids):[];
   const webQty=orders.filter(o=>o.source==='web').reduce((s,o)=>s+platformOrderQty(o.id),0),offsiteOrderQty=orders.filter(o=>o.source!=='web').reduce((s,o)=>s+platformOrderQty(o.id),0);
   const manualOffsite=tx.filter(x=>x.kind==='offsite_sale').reduce((s,x)=>s+int(x.qty),0),selfQty=tx.filter(x=>x.kind==='taken_for_self').reduce((s,x)=>s+int(x.qty),0),otherQty=tx.filter(x=>x.kind==='other_adjustment').reduce((s,x)=>s+int(x.qty),0);
-  const accountable=webQty+offsiteOrderQty+manualOffsite+selfQty;
+  const accountable=webQty+offsiteOrderQty+manualOffsite;
   const bossOrderShare=entries.filter(x=>x.source_driver_id===period.driver_id&&x.target_type==='boss').reduce((s,x)=>s+int(x.amount_cents),0);
   const bossRate=int(one("SELECT amount_cents FROM settlement_rules WHERE territory_id=? AND from_driver_id=? AND rule_type='per_can_driver_to_boss' AND active=1 AND archived=0 ORDER BY sort_order LIMIT 1",period.territory_id,period.driver_id)?.amount_cents);
-  const personalUseCharge=tx.filter(x=>x.kind==='taken_for_self').reduce((s,x)=>s+int(x.amount_cents),0),manualBossShare=manualOffsite*bossRate+personalUseCharge,bossShare=bossOrderShare+manualBossShare;
+  const personalUseCharge=0,manualBossShare=manualOffsite*bossRate,bossShare=bossOrderShare+manualBossShare;
   const confirmedBossPayments=pays.filter(x=>['boss','company'].includes(x.destination_type)).reduce((s,x)=>s+int(x.amount_cents),0),manualBossCredits=tx.filter(x=>x.kind==='boss_credit').reduce((s,x)=>s+int(x.amount_cents),0),bossCredit=confirmedBossPayments+manualBossCredits;
   const calculatedNet=bossShare-bossCredit,adjustment=int(period.adjustment_cents),netBossDue=calculatedNet+adjustment,sendToBoss=Math.max(0,netBossDue),bossOwesDriver=Math.max(0,-netBossDue),cashInHand=pays.filter(x=>x.method==='cash'&&x.destination_type==='driver'&&(!x.destination_driver_id||x.destination_driver_id===period.driver_id)).reduce((s,x)=>s+int(x.amount_cents),0)+tx.filter(x=>x.kind==='cash_collected').reduce((s,x)=>s+int(x.amount_cents),0);
   const owesDrivers=entries.filter(x=>x.source_driver_id===period.driver_id&&x.target_type==='driver').reduce((s,x)=>s+int(x.amount_cents),0),receivesDrivers=entries.filter(x=>x.target_driver_id===period.driver_id&&x.source_driver_id!==period.driver_id).reduce((s,x)=>s+int(x.amount_cents),0),driverKeeps=cashInHand+bossOwesDriver+receivesDrivers-sendToBoss-owesDrivers;

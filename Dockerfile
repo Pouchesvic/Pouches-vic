@@ -9,6 +9,8 @@ COPY server.js ./
 COPY sqlite.js ./
 COPY company-stock.js ./
 COPY final-operations.js ./
+COPY supervisor-ledger.js ./
+COPY driver-inventory.js ./
 COPY product-catalog.json ./
 COPY index.html ./
 COPY admin.html ./

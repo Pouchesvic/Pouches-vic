@@ -89,6 +89,23 @@ module.exports = function createCompanyStock({ db, now, id, text, int, bool, jso
         ON order_inventory_reservations(order_id,status);
       CREATE INDEX IF NOT EXISTS idx_order_inventory_reservations_stock
         ON order_inventory_reservations(territory_id,product_id,pool,status);
+      CREATE TABLE IF NOT EXISTS inventory_check_stock_holds(
+        id TEXT PRIMARY KEY,
+        order_id TEXT,
+        territory_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        pool TEXT NOT NULL CHECK(pool IN ('linked','independent')),
+        driver_id TEXT,
+        qty INTEGER NOT NULL CHECK(qty>0),
+        remaining_qty INTEGER NOT NULL CHECK(remaining_qty>=0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE SET NULL,
+        FOREIGN KEY(territory_id) REFERENCES territories(id) ON DELETE RESTRICT,
+        FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE RESTRICT,
+        FOREIGN KEY(driver_id) REFERENCES drivers(id) ON DELETE SET NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_check_stock_holds_open ON inventory_check_stock_holds(territory_id,product_id,driver_id,remaining_qty);
       CREATE INDEX IF NOT EXISTS idx_inventory_movements_scope_pool
         ON inventory_movements(scope,pool,created_at);
     `);
@@ -260,12 +277,54 @@ module.exports = function createCompanyStock({ db, now, id, text, int, bool, jso
       updateBucket(territoryId, productId, pool, 'reserved', take, {
         movementType: 'order_reservation', orderId, driverId, note, role: 'system', relatedPool: `${pool}_sellable`, metadata: { order_item_id: orderItemId }
       });
-      const stamp = now();
-      run(`INSERT INTO order_inventory_reservations(id,order_id,order_item_id,territory_id,product_id,pool,qty,status,created_at,updated_at)
+      const stamp = now(),existing=one("SELECT * FROM order_inventory_reservations WHERE order_item_id=? AND pool=? AND status='reserved'",orderItemId,pool);
+      if(existing)run('UPDATE order_inventory_reservations SET qty=qty+?,updated_at=? WHERE id=?',take,stamp,existing.id);
+      else run(`INSERT INTO order_inventory_reservations(id,order_id,order_item_id,territory_id,product_id,pool,qty,status,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,'reserved',?,?)`, id(), orderId, orderItemId, territoryId, productId, pool, take, stamp, stamp);
       remaining -= take;
     }
     run("UPDATE orders SET inventory_model='pooled_v1',inventory_finalized=0 WHERE id=?", orderId);
+  }
+
+  function holdReservedOrderItem(orderId, productId, qty, { role = 'driver', driverId = null, note = "Can't find" } = {}) {
+    let remaining = Math.max(0, int(qty));
+    if (!remaining) throw new Error('Choose how many cans cannot be found.');
+    const reservations = all("SELECT * FROM order_inventory_reservations WHERE order_id=? AND product_id=? AND status='reserved' ORDER BY created_at,id", orderId, productId);
+    if (reservations.reduce((sum,row)=>sum+int(row.qty),0) < remaining) throw new Error("Can't Find quantity is higher than the reserved quantity.");
+    for (const reservation of reservations) {
+      const take = Math.min(remaining, int(reservation.qty));
+      if (!take) continue;
+      updateBucket(reservation.territory_id, reservation.product_id, reservation.pool, 'reserved', -take, {
+        movementType: 'order_check_stock', orderId, driverId, note, role, relatedPool: `${reservation.pool}_held`, metadata: { reservation_id: reservation.id, qty: take }
+      });
+      updateBucket(reservation.territory_id, reservation.product_id, reservation.pool, 'held', take, {
+        movementType: 'order_check_stock', orderId, driverId, note, role, relatedPool: `${reservation.pool}_reserved`, metadata: { reservation_id: reservation.id, qty: take }
+      });
+      if (take === int(reservation.qty)) run("UPDATE order_inventory_reservations SET status='released',updated_at=? WHERE id=?", now(), reservation.id);
+      else run('UPDATE order_inventory_reservations SET qty=qty-?,updated_at=? WHERE id=?', take, now(), reservation.id);
+      run(`INSERT INTO inventory_check_stock_holds(id,order_id,territory_id,product_id,pool,driver_id,qty,remaining_qty,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?)`, id(), reservation.order_id, reservation.territory_id, reservation.product_id, reservation.pool, driverId, take, take, now(), now());
+      remaining -= take;
+      if (!remaining) break;
+    }
+    return int(qty);
+  }
+
+  function resolveHeldCheckStock(territoryId, productId, qty, found, { role = 'admin', driverId = null, note = '' } = {}) {
+    let remaining = Math.max(0, int(qty));
+    if (!remaining) throw new Error('Enter a quantity.');
+    const holds=driverId
+      ? all('SELECT * FROM inventory_check_stock_holds WHERE territory_id=? AND product_id=? AND driver_id=? AND remaining_qty>0 ORDER BY created_at,id',territoryId,productId,driverId)
+      : all('SELECT * FROM inventory_check_stock_holds WHERE territory_id=? AND product_id=? AND remaining_qty>0 ORDER BY created_at,id',territoryId,productId);
+    if(holds.reduce((sum,row)=>sum+int(row.remaining_qty),0)<remaining)throw new Error('Not enough CHECK STOCK inventory to resolve.');
+    for(const hold of holds){
+      const take=Math.min(remaining,int(hold.remaining_qty));if(!take)continue;
+      updateBucket(territoryId, productId, hold.pool, 'held', -take, { movementType: found?'check_stock_found':'check_stock_written_off', note, role, driverId, relatedPool: found?`${hold.pool}_sellable`:'', metadata:{check_stock_hold_id:hold.id,qty:take} });
+      if (found) updateBucket(territoryId, productId, hold.pool, 'sellable', take, { movementType:'check_stock_found', note, role, driverId, relatedPool:`${hold.pool}_held`, metadata:{check_stock_hold_id:hold.id,qty:take} });
+      run('UPDATE inventory_check_stock_holds SET remaining_qty=remaining_qty-?,updated_at=? WHERE id=?',take,now(),hold.id);
+      remaining-=take;if(!remaining)break;
+    }
+    return syncLegacyInventory(territoryId, productId);
   }
 
   function releaseOrder(orderId, { role = 'system', driverId = null, note = '' } = {}) {
@@ -650,6 +709,8 @@ module.exports = function createCompanyStock({ db, now, id, text, int, bool, jso
     ensureTerritoryProduct,
     syncLegacyInventory,
     reserveOrderItem,
+    holdReservedOrderItem,
+    resolveHeldCheckStock,
     releaseOrder,
     finalizeOrder,
     adjustTerritory,
