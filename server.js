@@ -21,6 +21,10 @@ const ORDER_EMAIL_FROM = process.env.ORDER_EMAIL_FROM || '';
 const ORDER_EMAIL_REPLY_TO = process.env.ORDER_EMAIL_REPLY_TO || '';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const ORDER_STATUSES = new Set(['new','assigned','acknowledged','picked_up','on_the_way','completed','cancelled']);
+const LOGIN_RATE_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_RATE_MAX_FAILURES = 10;
+const LOGIN_RATE_BLOCK_MS = 15 * 60 * 1000;
+const loginFailures = new Map();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const db = new Database(DB_FILE);
@@ -56,6 +60,12 @@ function displayStrength(value) {
 function normalizePhone(v) { return text(v); }
 function normalizeEmail(v) { return lower(v); }
 function validEmail(v) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(v)); }
+function clientIp(req){const xff=text(req.headers['x-forwarded-for']);if(xff){const parts=xff.split(',').map(x=>x.trim()).filter(Boolean);if(parts.length)return parts[parts.length-1];}return text(req.headers['x-real-ip'])||text(req.socket?.remoteAddress)||'unknown';}
+function loginRateKey(req,scope){return scope+':'+clientIp(req);}
+function loginRateRecord(key){const t=Date.now();let r=loginFailures.get(key);if(!r||t-r.windowStart>=LOGIN_RATE_WINDOW_MS){r={windowStart:t,count:0,blockUntil:0};loginFailures.set(key,r);}return r;}
+function loginRetrySeconds(key){const r=loginFailures.get(key),t=Date.now();if(!r)return 0;if(r.blockUntil>t)return Math.max(1,Math.ceil((r.blockUntil-t)/1000));if(t-r.windowStart>=LOGIN_RATE_WINDOW_MS){loginFailures.delete(key);return 0;}return 0;}
+function recordLoginFailure(key){const r=loginRateRecord(key);r.count++;if(r.count>=LOGIN_RATE_MAX_FAILURES)r.blockUntil=Date.now()+LOGIN_RATE_BLOCK_MS;return loginRetrySeconds(key);}
+function clearLoginFailures(key){loginFailures.delete(key);}
 const PAYMENT_METHOD_REGISTRY=Object.freeze({
   cash:{label:'Cash',aliases:['cash','cashondelivery'],enabled_setting:'payment_cash_enabled',connected_setting:null},
   etransfer:{label:'e-Transfer',aliases:['etransfer','etransferondelivery'],enabled_setting:'payment_etransfer_enabled',connected_setting:null},
@@ -77,7 +87,9 @@ function paymentLabel(v) {
   if(method==='other') return 'Other';
   return text(v)||'Not specified';
 }
-function hashPin(pin) { return crypto.createHash('sha256').update(`pv-driver:${text(pin)}`).digest('hex'); }
+function legacyPinHash(pin) { return crypto.createHash('sha256').update(`pv-driver:${text(pin)}`).digest('hex'); }
+function encodePin(pin){const salt=crypto.randomBytes(16),derived=crypto.scryptSync(`pv-driver:${text(pin)}`,salt,32);return `scrypt$${salt.toString('hex')}$${derived.toString('hex')}`;}
+function verifyPin(pin,stored){const value=text(stored);if(!value)return false;if(value.startsWith('scrypt$')){const parts=value.split('$');if(parts.length!==3)return false;try{const salt=Buffer.from(parts[1],'hex'),expected=Buffer.from(parts[2],'hex'),actual=crypto.scryptSync(`pv-driver:${text(pin)}`,salt,expected.length);return expected.length===actual.length&&crypto.timingSafeEqual(expected,actual);}catch{return false;}}const expected=Buffer.from(legacyPinHash(pin)),actual=Buffer.from(value);return expected.length===actual.length&&crypto.timingSafeEqual(expected,actual);}
 function weekStartMonday(dateLike = new Date()) {
   const d = new Date(dateLike);
   const day = d.getUTCDay();
@@ -965,6 +977,8 @@ function cancelOrder(oid,{role='admin',driver_id=null,note=''}={}) {
   if(!o) throw new Error('Order not found');
   if(o.status==='cancelled') return orderFull(oid);
   if(o.status==='completed') throw new Error('Completed orders cannot be cancelled. Use a return/refund workflow instead.');
+  const receivedPayments=all("SELECT id FROM payments WHERE order_id=? AND status='received'",oid);
+  if(receivedPayments.length)throw new Error('This order has a received payment. Refund or reverse that payment in Control Room before cancelling the order.');
   const items=all('SELECT * FROM order_items WHERE order_id=?',oid);
   db.transaction(()=>{
     if(o.inventory_applied){
@@ -1179,12 +1193,12 @@ function saveTerritoryEntity(kind,tid,b) {
     if(driverId){
       const pinClause=text(b.pin)?',pin_hash=?':'';
       const args=[text(b.name),bool(b.active),text(b.role)||'driver',text(b.email),normalizePhone(b.phone),normalizePhone(b.customer_contact_number),text(b.notes),t];
-      if(text(b.pin))args.push(hashPin(b.pin)); args.push(driverId,tid);
+      if(text(b.pin))args.push(encodePin(b.pin)); args.push(driverId,tid);
       run(`UPDATE drivers SET name=?,active=?,role=?,email=?,phone=?,customer_contact_number=?,notes=?,updated_at=?${pinClause} WHERE id=? AND territory_id=?`,...args);
     } else {
       driverId=id();
       run(`INSERT INTO drivers(id,territory_id,name,active,archived,role,email,phone,customer_contact_number,notes,pin_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        driverId,tid,text(b.name),bool(b.active??true),0,text(b.role)||'driver',text(b.email),normalizePhone(b.phone),normalizePhone(b.customer_contact_number),text(b.notes),text(b.pin)?hashPin(b.pin):'',t,t);
+        driverId,tid,text(b.name),bool(b.active??true),0,text(b.role)||'driver',text(b.email),normalizePhone(b.phone),normalizePhone(b.customer_contact_number),text(b.notes),text(b.pin)?encodePin(b.pin):'',t,t);
       run('UPDATE drivers SET personal_use_rate_cents=0,personal_rate_driver_editable=0 WHERE id=?',driverId);
     }
     const terr=one('SELECT default_driver_id FROM territories WHERE id=?',tid);
@@ -1300,7 +1314,9 @@ const server=http.createServer(async(req,res)=>{
 
     // Admin auth
     if(url.pathname==='/api/admin/login'&&req.method==='POST'){
-      const b=await bodyJson(req); if(text(b.password)!==ADMIN_PASSWORD)return send(res,401,{error:'Wrong password'});
+      const rateKey=loginRateKey(req,'admin-login'),retry=loginRetrySeconds(rateKey);if(retry)return send(res,429,{error:'Too many failed login attempts. Try again later.'},'application/json; charset=utf-8',{'Retry-After':String(retry)});
+      const b=await bodyJson(req); if(text(b.password)!==ADMIN_PASSWORD){const wait=recordLoginFailure(rateKey);return wait?send(res,429,{error:'Too many failed login attempts. Try again later.'},'application/json; charset=utf-8',{'Retry-After':String(wait)}):send(res,401,{error:'Wrong password'});}
+      clearLoginFailures(rateKey);
       const tok=token(); adminSessions.set(tok,{role:'super_admin',created:Date.now()});
       return send(res,200,{ok:true},'application/json; charset=utf-8',{'Set-Cookie':`pv_session=${tok}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`});
     }
@@ -1440,6 +1456,7 @@ const server=http.createServer(async(req,res)=>{
     if(ord&&req.method==='PUT'){
       const oid=decodeURIComponent(ord[1]),b=await bodyJson(req),o=one('SELECT * FROM orders WHERE id=?',oid);if(!o)return send(res,404,{error:'Not found'});
       if(text(b.status)==='cancelled') return send(res,200,cancelOrder(oid,{role:'admin',note:text(b.note)}));
+      if(['completed','cancelled'].includes(o.status))throw new Error('Completed or cancelled orders are locked. Use an explicit correction or refund workflow instead.');
       const oldStatus=o.status; const status=text(b.status)||o.status;if(!ORDER_STATUSES.has(status))throw new Error('Invalid order status');
       if(status==='completed'&&o.final_total_pending)throw new Error("Final delivery total hasn't been confirmed yet.");
       const driver=b.assigned_driver_id===undefined?o.assigned_driver_id:(b.assigned_driver_id||null);
@@ -1487,6 +1504,15 @@ const server=http.createServer(async(req,res)=>{
       const p=insertPayment({order_id:oid,territory_id:o.territory_id,driver_id:o.assigned_driver_id,method:b.method,amount_cents:b.amount_cents!=null?int(b.amount_cents):cents(b.amount),destination_type:b.destination_type||'driver',destination_driver_id:b.destination_driver_id||null,status:b.status||'received',note:b.note,created_by_role:'admin'});
       addOrderEvent(oid,'payment','Payment recorded',{payment_id:p},{created_by_role:'admin'}); return send(res,201,{ok:true,id:p});
     }
+    const refundPayment=url.pathname.match(/^\/api\/admin\/payments\/([^/]+)\/refund$/);
+    if(refundPayment&&req.method==='POST'){
+      const paymentId=decodeURIComponent(refundPayment[1]),pmt=one('SELECT * FROM payments WHERE id=?',paymentId);if(!pmt)throw new Error('Payment not found');
+      if(pmt.status!=='received')throw new Error('Only a received payment can be refunded or reversed.');
+      const b=await bodyJson(req),reason=text(b.reason);if(!reason)throw new Error('Tell us why this payment is being refunded or reversed.');
+      const order=one('SELECT * FROM orders WHERE id=?',pmt.order_id);if(!order)throw new Error('Order not found');
+      db.transaction(()=>{run("UPDATE payments SET status='refunded',note=CASE WHEN trim(COALESCE(note,''))='' THEN ? ELSE note||' | '||? END WHERE id=?",`Refunded/reversed: ${reason}`,`Refunded/reversed: ${reason}`,paymentId);addOrderEvent(order.id,'payment_refunded',`Payment refunded/reversed: ${money(pmt.amount_cents)}`,{payment_id:paymentId,amount_cents:int(pmt.amount_cents),method:pmt.method,destination_type:pmt.destination_type,reason},{attention:1,created_by_role:'admin',visible_to_customer:false});})();
+      return send(res,200,{ok:true,id:paymentId,status:'refunded'});
+    }
     const evt=url.pathname.match(/^\/api\/admin\/orders\/([^/]+)\/events$/);
     if(evt&&req.method==='POST'){ const b=await bodyJson(req); addOrderEvent(decodeURIComponent(evt[1]),text(b.event_type)||'note',text(b.message),b.data||{}, {attention:b.attention,pinned:b.pinned,visible_to_customer:b.visible_to_customer,created_by_role:'admin'}); return send(res,201,{ok:true}); }
     const evtPatch=url.pathname.match(/^\/api\/admin\/events\/([^/]+)$/);
@@ -1523,7 +1549,10 @@ const server=http.createServer(async(req,res)=>{
     }
 
     if(url.pathname==='/api/driver/login'&&req.method==='POST'){
-      const b=await bodyJson(req); const d=one('SELECT * FROM drivers WHERE id=? AND active=1 AND archived=0',text(b.driver_id)); if(!d||!d.pin_hash||d.pin_hash!==hashPin(b.pin))return send(res,401,{error:'Wrong driver or PIN'});
+      const rateKey=loginRateKey(req,'driver-login'),retry=loginRetrySeconds(rateKey);if(retry)return send(res,429,{error:'Too many failed login attempts. Try again later.'},'application/json; charset=utf-8',{'Retry-After':String(retry)});
+      const b=await bodyJson(req); const d=one('SELECT * FROM drivers WHERE id=? AND active=1 AND archived=0',text(b.driver_id)); if(!d||!verifyPin(b.pin,d.pin_hash)){const wait=recordLoginFailure(rateKey);return wait?send(res,429,{error:'Too many failed login attempts. Try again later.'},'application/json; charset=utf-8',{'Retry-After':String(wait)}):send(res,401,{error:'Wrong driver or PIN'});}
+      if(!String(d.pin_hash).startsWith('scrypt$'))run('UPDATE drivers SET pin_hash=?,updated_at=? WHERE id=?',encodePin(b.pin),now(),d.id);
+      clearLoginFailures(rateKey);
       const tok=token();driverSessions.set(tok,{driver_id:d.id,territory_id:d.territory_id,created:Date.now()});
       return send(res,200,{ok:true,driver:{id:d.id,name:d.name,territory_id:d.territory_id}},'application/json; charset=utf-8',{'Set-Cookie':`pv_driver_session=${tok}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`});
     }
@@ -1632,7 +1661,9 @@ const server=http.createServer(async(req,res)=>{
           if(['completed','cancelled'].includes(o.status))throw new Error('Completed or already-cancelled orders cannot be cancelled by the driver');
           return send(res,200,cancelOrder(oid,{role:'driver',driver_id:driver.id,note:text(b.note)||'Driver cancelled order'}));
         }
-        const status=text(b.status)||o.status;if(!['acknowledged','picked_up','on_the_way','completed'].includes(status))throw new Error('Invalid driver order status'); const completed=status==='completed'?(o.completed_at||now()):o.completed_at;
+        const status=text(b.status)||o.status;if(!['acknowledged','picked_up','on_the_way','completed'].includes(status))throw new Error('Invalid driver order status');
+        if(['completed','cancelled'].includes(o.status)&&status!==o.status)throw new Error('Completed or cancelled orders cannot be reopened through normal status updates.');
+        const completed=status==='completed'?(o.completed_at||now()):o.completed_at;
         if(status==='completed'&&o.final_total_pending)throw new Error("Final delivery total hasn't been confirmed yet.");
         db.transaction(()=>{
           run('UPDATE orders SET status=?,completed_at=?,updated_at=? WHERE id=?',status,completed,now(),oid);
@@ -1644,7 +1675,7 @@ const server=http.createServer(async(req,res)=>{
       }
       const dp=url.pathname.match(/^\/api\/driver\/orders\/([^/]+)\/payments$/);
       if(dp&&req.method==='POST'){
-        const oid=decodeURIComponent(dp[1]),o=one('SELECT * FROM orders WHERE id=?',oid);if(!o||o.assigned_driver_id!==driver.id)return send(res,404,{error:'Not found'}); const b=await bodyJson(req);
+        const oid=decodeURIComponent(dp[1]),o=one('SELECT * FROM orders WHERE id=?',oid);if(!o||o.assigned_driver_id!==driver.id)return send(res,404,{error:'Not found'});if(['completed','cancelled'].includes(o.status))throw new Error('Payments cannot be added to a completed or cancelled order through the driver app.'); const b=await bodyJson(req);
         const pid=insertPayment({order_id:oid,territory_id:o.territory_id,driver_id:driver.id,method:b.method,amount_cents:b.amount_cents!=null?int(b.amount_cents):cents(b.amount),destination_type:b.destination_type||'driver',destination_driver_id:b.destination_driver_id||null,status:b.status||'received',note:b.note,created_by_role:'driver',created_by_driver_id:driver.id});
         addOrderEvent(oid,'driver_payment','Driver recorded a payment',{payment_id:pid},{attention:1,created_by_role:'driver',created_by_driver_id:driver.id}); return send(res,201,{ok:true,id:pid});
       }
@@ -1652,7 +1683,7 @@ const server=http.createServer(async(req,res)=>{
       if(de&&req.method==='POST'){ const oid=decodeURIComponent(de[1]),o=one('SELECT * FROM orders WHERE id=?',oid);if(!o||o.assigned_driver_id!==driver.id)return send(res,404,{error:'Not found'}); const b=await bodyJson(req); addOrderEvent(oid,text(b.event_type)||'driver_note',text(b.message),b.data||{}, {attention:b.attention??true,visible_to_customer:b.visible_to_customer,created_by_role:'driver',created_by_driver_id:driver.id}); return send(res,201,{ok:true}); }
       const dinv=url.pathname.match(/^\/api\/driver\/orders\/([^/]+)\/inventory-adjustment$/);
       if(dinv&&req.method==='POST'){
-        const oid=decodeURIComponent(dinv[1]),o=one('SELECT * FROM orders WHERE id=?',oid);if(!o||o.assigned_driver_id!==driver.id)return send(res,404,{error:'Not found'}); const b=await bodyJson(req); if(!text(b.note))throw new Error('A short note is required');
+        const oid=decodeURIComponent(dinv[1]),o=one('SELECT * FROM orders WHERE id=?',oid);if(!o||o.assigned_driver_id!==driver.id)return send(res,404,{error:'Not found'});if(['completed','cancelled'].includes(o.status))throw new Error('Inventory cannot be changed on a completed or cancelled order through the driver app.'); const b=await bodyJson(req); if(!text(b.note))throw new Error('A short note is required');
         const balance=db.transaction(()=>applyInventoryMovement({territory_id:o.territory_id,product_id:text(b.product_id),qty_delta:int(b.qty_delta),movement_type:text(b.movement_type)||'driver_order_adjustment',order_id:oid,driver_id:driver.id,note:text(b.note),created_by_role:'driver',created_by_driver_id:driver.id}))();
         addOrderEvent(oid,'driver_inventory_change',text(b.note),{product_id:b.product_id,qty_delta:int(b.qty_delta)},{attention:1,created_by_role:'driver',created_by_driver_id:driver.id}); return send(res,201,{ok:true,balance});
       }
