@@ -339,6 +339,7 @@ function ensurePlatform() {
         key, bool(meta.enabled), meta.readiness, jsonText(meta.config || {}), t);
     }
   }
+  run("UPDATE platform_modules SET enabled=0,readiness='retired',updated_at=? WHERE module_key='delivery_zone_overrides'",t);
   if (!one("SELECT 1 FROM platform_display_config WHERE id='primary'")) run("INSERT INTO platform_display_config(id,show_social_links,updated_at) VALUES('primary',0,?)", t);
   ensureVictoriaOrderRecipient();
   platformReady = true;
@@ -377,7 +378,7 @@ function defaultModules() {
     barcode_inventory: { enabled: true, readiness: 'installed' },
     customer_support_updates: { enabled: true, readiness: 'installed' },
     customer_history: { enabled: true, readiness: 'installed' },
-    delivery_zone_overrides: { enabled: true, readiness: 'installed' },
+    delivery_zone_overrides: { enabled: false, readiness: 'retired' },
     product_ratings: { enabled: false, readiness: 'installed_off' },
     delivery_method_step: { enabled: false, readiness: 'installed_off' },
     order_photos: { enabled: true, readiness: 'installed', config: { max_photos_per_order: 8, driver_can_delete: true, require_pickup_before_on_the_way: false, require_delivery_before_completed: false, storage_provider: 'local' } },
@@ -951,84 +952,6 @@ function saveTerritoryPlatform(territoryId, b) {
   run(`UPDATE platform_territory_config SET announcement_enabled=?,announcement_text=?,help_enabled=?,help_heading=?,help_text=?,help_contact=?,help_contact_action=?,updated_at=? WHERE territory_id=?`,
     bool(b.announcement_enabled), text(b.announcement_text), bool(b.help_enabled), text(b.help_heading) || 'Need help?', text(b.help_text), text(b.help_contact), action, now(), territoryId);
   return publicTerritoryPlatform(one('SELECT slug FROM territories WHERE id=?', territoryId).slug);
-}
-function pointInRingPlatform(point, ring) {
-  const [x,y] = point; let inside = false;
-  for (let i=0,j=ring.length-1;i<ring.length;j=i++) {
-    const xi=Number(ring[i][0]), yi=Number(ring[i][1]), xj=Number(ring[j][0]), yj=Number(ring[j][1]);
-    const hit=((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/((yj-yi)||Number.EPSILON)+xi);
-    if(hit) inside=!inside;
-  }
-  return inside;
-}
-function pointInGeoJSONPlatform(lng, lat, value) {
-  const g = typeof value === 'string' ? safeJson(value, null) : value;
-  const geom = g?.type === 'Feature' ? g.geometry : g;
-  const point = [Number(lng), Number(lat)];
-  const polygon = poly => Array.isArray(poly) && poly.length && pointInRingPlatform(point, poly[0]) && !poly.slice(1).some(r=>pointInRingPlatform(point,r));
-  if (geom?.type === 'Polygon') return polygon(geom.coordinates);
-  if (geom?.type === 'MultiPolygon') return geom.coordinates.some(p=>polygon(p));
-  return false;
-}
-function naturalZone(territoryId, lng, lat) {
-  if (!Number.isFinite(Number(lng)) || !Number.isFinite(Number(lat))) return null;
-  return all('SELECT * FROM delivery_zones WHERE territory_id=? AND active=1 ORDER BY sort_order,name', territoryId)
-    .find(z => text(z.geojson) && pointInGeoJSONPlatform(Number(lng), Number(lat), z.geojson)) || null;
-}
-function matchingZoneOverride(territoryId, contact = {}) {
-  if (!getModules().delivery_zone_overrides?.enabled) return null;
-  const customer = findCustomer(contact);
-  if (customer) {
-    const byCustomer = one(`SELECT z.*,d.name zone_name,d.color_label,d.fee_cents zone_fee_cents,d.fee zone_fee,d.free_at_qty
-      FROM platform_zone_overrides z JOIN delivery_zones d ON d.id=z.zone_id
-      WHERE z.territory_id=? AND z.active=1 AND z.match_type='customer' AND z.customer_id=? ORDER BY z.updated_at DESC LIMIT 1`, territoryId, customer.id);
-    if (byCustomer) return byCustomer;
-  }
-  const addr = normalizeAddressKey(contact.address);
-  if (addr) {
-    const exact = one(`SELECT z.*,d.name zone_name,d.color_label,d.fee_cents zone_fee_cents,d.fee zone_fee,d.free_at_qty
-      FROM platform_zone_overrides z JOIN delivery_zones d ON d.id=z.zone_id
-      WHERE z.territory_id=? AND z.active=1 AND z.match_type='address' AND z.match_value=? ORDER BY z.updated_at DESC LIMIT 1`, territoryId, addr);
-    if (exact) return exact;
-  }
-  const street = normalizeStreetKey(contact.address);
-  if (street) {
-    const streetMatch = one(`SELECT z.*,d.name zone_name,d.color_label,d.fee_cents zone_fee_cents,d.fee zone_fee,d.free_at_qty
-      FROM platform_zone_overrides z JOIN delivery_zones d ON d.id=z.zone_id
-      WHERE z.territory_id=? AND z.active=1 AND z.match_type='street' AND z.match_value=? ORDER BY z.updated_at DESC LIMIT 1`, territoryId, street);
-    if (streetMatch) return streetMatch;
-  }
-  return null;
-}
-function resolveDeliveryQuote(body) {
-  const terr = one('SELECT * FROM territories WHERE slug=? AND active=1 AND archived=0', text(body.territory_slug) || 'victoria');
-  if (!terr) throw new Error('Delivery area unavailable');
-  const override = matchingZoneOverride(terr.id, body);
-  let zone = null;
-  if (override) zone = one('SELECT * FROM delivery_zones WHERE id=? AND territory_id=? AND active=1', override.zone_id, terr.id);
-  if (!zone && body.lng != null && body.lat != null) zone = naturalZone(terr.id, body.lng, body.lat);
-  if (!zone) {
-    let mismatch=null;
-    if(body.lng!=null&&body.lat!=null)for(const other of all('SELECT id,name,slug FROM territories WHERE id<>? AND active=1 AND archived=0 ORDER BY name',terr.id)){const found=naturalZone(other.id,body.lng,body.lat);if(found){mismatch={territory:other,zone:{id:found.id,name:found.name}};break;}}
-    return { territory: { id: terr.id, name: terr.name, slug: terr.slug }, serviceable: false, zone: null, override: null, territory_mismatch:mismatch };
-  }
-  const baseFee = int(zone.fee_cents ?? Math.round(Number(zone.fee || 0) * 100));
-  const feeOverride = override && override.fee_cents != null ? int(override.fee_cents) : null;
-  const qty = Array.isArray(body.items) ? body.items.reduce((sum,x)=>sum+Math.max(0,int(x.qty ?? x.quantity ?? x.q)),0) : Math.max(0,int(body.qty));
-  let finalFee = baseFee, reason = '';
-  if (feeOverride != null) {
-    finalFee = Math.max(0,feeOverride);
-    if (finalFee < baseFee) reason = text(override.note) || 'VIP Customer Discount';
-  } else if (zone.free_at_qty != null && qty >= int(zone.free_at_qty)) {
-    finalFee = 0;
-    reason = `${int(zone.free_at_qty)}+ Can Delivery Reward`;
-  }
-  const savings = Math.max(0,baseFee-finalFee);
-  return {
-    territory: { id: terr.id, name: terr.name, slug: terr.slug }, serviceable: true,
-    zone: { id: zone.id, name: zone.name, color_label: zone.color_label, fee_cents: finalFee, base_fee_cents: baseFee, delivery_savings_cents: savings, delivery_discount_reason: savings ? reason : '', free_at_qty: zone.free_at_qty == null ? null : int(zone.free_at_qty) },
-    override: override ? { id: override.id, applied: true, fee_cents: feeOverride, note: text(override.note) } : null
-  };
 }
 function corePublicPost(pathname, body) {
   return new Promise((resolve, reject) => {

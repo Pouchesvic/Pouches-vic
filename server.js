@@ -956,7 +956,7 @@ function createOrderCore(b,{source='web',created_by_role='customer',created_by_d
   if(b.zone_id) zone=one('SELECT * FROM delivery_zones WHERE id=? AND territory_id=? AND active=1',text(b.zone_id),territory.id);
   if(b.zone_id&&!zone) throw new Error('The selected delivery area is no longer available');
   if(source==='web'&&!zone) throw new Error('Choose your delivery area before placing the order.');
-  const deliveryOverride=b.delivery_fee_cents!=null?int(b.delivery_fee_cents):(b.delivery_fee!=null?cents(b.delivery_fee):null);
+  const deliveryOverride=source==='web'?null:(b.delivery_fee_cents!=null?int(b.delivery_fee_cents):(b.delivery_fee!=null?cents(b.delivery_fee):null));
   const math=calculateOrder({territory,items,zone,delivery_fee_override_cents:deliveryOverride});
   if(source!=='web'&&b.sale_amount_cents!=null){const sale=Math.max(0,int(b.sale_amount_cents)),qty=Math.max(1,requestedQty);let assigned=0;items.forEach((x,index)=>{x.line_cents=index===items.length-1?sale-assigned:Math.round(sale*x.q/qty);x.unit_cents=Math.floor(x.line_cents/x.q);assigned+=x.line_cents;});math.subtotal_cents=sale;math.normal_delivery_fee_cents=0;math.delivery_fee_cents=0;math.delivery_savings_cents=0;math.delivery_discount_reason='';math.pre_discount_total_cents=sale;math.customer_discount_cents=0;math.total_cents=sale;}
   if(math.delivery_savings_cents>0&&text(b.delivery_discount_reason))math.delivery_discount_reason=text(b.delivery_discount_reason);
@@ -1395,15 +1395,7 @@ const server=http.createServer(async(req,res)=>{
       if(!b.age_acknowledged) return send(res,400,{error:'Age acknowledgement is required'});
       if(!text(b.customer_name)||!text(b.customer_phone)||(!bool(b.manual_location)&&!text(b.address))) return send(res,400,{error:'Name, cell number and a delivery address or meeting location are required'});
       if(text(b.customer_email)&&!validEmail(b.customer_email)) return send(res,400,{error:'Enter a valid email address or leave it blank'});
-      const platformVerified=req.headers['x-pv-platform-internal']==='1';
-      if(!bool(b.manual_location)&&!platformVerified){
-        if(b.address_lat==null||b.address_lng==null)return send(res,400,{error:'Select your address from the live suggestions so its delivery area can be verified.'});
-        const territory=publicTerritory(text(b.territory_slug)||'victoria'),detected=territory?detectZone(territory.id,num(b.address_lng),num(b.address_lat)):null;
-        if(!detected)return send(res,400,{error:'That exact location is outside the selected delivery area.'});
-        if(text(b.zone_id)&&text(b.zone_id)!==detected.id)return send(res,400,{error:`This address is in ${detected.name}. Please review the delivery area before ordering.`});
-        b.zone_id=detected.id;
-      }
-      if(!bool(b.manual_location)&&!text(b.zone_id)) return send(res,400,{error:'Please choose your delivery area'});
+      if(!text(b.zone_id)) return send(res,400,{error:'Please choose your delivery area'});
       const method=normalizePaymentMethod(b.payment_method);
       if(!method) return send(res,400,{error:'Please choose a valid payment method'});
       const paymentState=customerPaymentMethods().find(x=>x.id===method);
@@ -1496,8 +1488,8 @@ const server=http.createServer(async(req,res)=>{
     const storefrontInfo=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/storefront-info$/);
     if(storefrontInfo&&req.method==='PUT'){
       const b=await bodyJson(req),tid=decodeURIComponent(storefrontInfo[1]);
-      run('UPDATE territories SET operating_hours=?,same_day_text=?,payment_note_text=?,delivery_map_image=?,updated_at=? WHERE id=?',
-        text(b.operating_hours),text(b.same_day_text)||'SAME-DAY DELIVERY',text(b.payment_note_text)||'No upfront payment — pay when your order arrives.',text(b.delivery_map_image),now(),tid);
+      run('UPDATE territories SET operating_hours=?,same_day_text=?,payment_note_text=?,delivery_map_image=COALESCE(?,delivery_map_image),updated_at=? WHERE id=?',
+        text(b.operating_hours),text(b.same_day_text)||'SAME-DAY DELIVERY',text(b.payment_note_text)||'No upfront payment — pay when your order arrives.',b.delivery_map_image===undefined?null:text(b.delivery_map_image),now(),tid);
       return send(res,200,{ok:true});
     }
     const mapCheck=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/map-check$/);
