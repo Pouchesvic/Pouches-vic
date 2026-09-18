@@ -475,6 +475,12 @@ if(fs.existsSync(DB_FILE)&&!fs.existsSync(PRE_LOCAL_BACKUP)){
   try{db.exec(`VACUUM INTO '${PRE_LOCAL_BACKUP.replace(/'/g,"''")}'`);}catch(e){console.error('Pre-Local database backup failed:',e.message);}
 }
 
+// Dedicated rollback copy before the Company Home / unified inventory release.
+const PRE_COMPANY_HOME_BACKUP=path.join(DATA_DIR,'pouchesvic-pre-company-home-2026-09-17.db');
+if(fs.existsSync(DB_FILE)&&!fs.existsSync(PRE_COMPANY_HOME_BACKUP)){
+  try{db.exec(`VACUUM INTO '${PRE_COMPANY_HOME_BACKUP.replace(/'/g,"''")}'`);}catch(e){console.error('Pre-Company-Home database backup failed:',e.message);}
+}
+
 // Safe upgrades from earlier PouchesVic builds.
 [
   ['territories','archived','INTEGER NOT NULL DEFAULT 0'],
