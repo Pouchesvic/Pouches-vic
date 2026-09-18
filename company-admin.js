@@ -300,8 +300,9 @@
       const byId=new Map((state.network?.company_reserve||[]).map(x=>[x.product_id,x]));
       return (state.data?.catalog||[]).map(p=>({product_id:p.id,brand:p.brand,flavor:p.flavor,qty:Number(byId.get(p.id)?.qty||0)})).filter(x=>includeZero||x.qty>0);
     }
-    const loc=parseNetworkLocation(value),entry=networkDrivers().find(x=>x.territory.id===loc.territory_id&&x.driver.id===loc.driver_id);
-    return (entry?.stock||[]).map(x=>({product_id:x.product_id,brand:x.brand,flavor:x.flavor,qty:Number(x.sellable_qty)||0})).filter(x=>includeZero||x.qty>0);
+    const loc=parseNetworkLocation(value),entry=networkDrivers().find(x=>x.territory.id===loc.territory_id&&x.driver.id===loc.driver_id),byId=new Map((entry?.stock||[]).map(x=>[x.product_id,x]));
+    const rows=includeZero?(state.network?.catalog||[]):(entry?.stock||[]);
+    return rows.map(x=>{const stock=byId.get(x.product_id)||x;return {product_id:x.product_id,brand:x.brand,flavor:x.flavor,qty:Number(stock.sellable_qty)||0};}).filter(x=>includeZero||x.qty>0);
   }
   function openNetworkMove(){
     modal(`<h2>Move Stock</h2><div class="good">One stock move for Company Reserve or any driver in any Local. Source and destination counts update together.</div><div class="field"><label>FROM</label><select id="csMoveFrom">${networkLocationOptions()}</select></div><div class="field"><label>PRODUCT</label><select id="csMoveProduct"></select></div><div class="field"><label>TO</label><select id="csMoveTo">${networkLocationOptions()}</select></div><div class="field"><label>QUANTITY</label><input id="csMoveQty" type="number" min="1" value="1"></div><div class="field"><label>NOTE</label><input id="csMoveNote" placeholder="Shipment / handoff note"></div><button class="btn" id="csMoveSave" style="width:100%">MOVE STOCK</button>`);

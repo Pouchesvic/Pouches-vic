@@ -1164,6 +1164,7 @@ function inventoryNetwork() {
     owner:one('SELECT id,name,territory_id FROM drivers WHERE is_company_owner=1 LIMIT 1'),
     grand_total_cans:grandTotal,
     company_reserve:reserve,
+    catalog:catalog.catalog.filter(p=>!p.archived&&p.active!==0).map(p=>({product_id:p.id,brand:p.brand,flavor:p.flavor,strength:p.strength})),
     locals
   };
 }
