@@ -162,7 +162,7 @@ async function openOwnerShipStock(){
     const reserveTotal=(companyNetwork.company_reserve||[]).reduce((n,x)=>n+Number(x.qty||0),0),driverRows=ownerShipProducts('driver'),driverTotal=driverRows.reduce((n,x)=>n+x.qty,0);
     const destinations=[];for(const l of companyNetwork.locals||[])for(const d of l.drivers||[])destinations.push({territory:l.territory,driver:d.driver});
     detail.innerHTML=`<h2>Ship Stock</h2><div class="good">Move exact physical cans from Prince George Company Reserve or your own Prince George storefront stock to any driver. All counts and storefront availability stay synced.</div><div class="field"><label>SHIP FROM</label><select id="ownerShipSource" onchange="refreshOwnerShipProducts()"><option value="company_reserve">Prince George — Company Reserve (${reserveTotal})</option><option value="driver">Prince George — My Driver Stock (${driverTotal})</option></select></div><div class="field"><label>PRODUCT</label><select id="ownerShipProduct"></select></div><div class="field"><label>SHIP TO</label><select id="ownerShipTo">${destinations.map(x=>`<option value="${x.territory.id}|${x.driver.id}">Local ${esc(x.territory.name)} — ${esc(x.driver.name)}</option>`).join('')}</select></div><div class="field"><label>QUANTITY</label><input id="ownerShipQty" type="number" min="1" value="1"></div><div class="field"><label>NOTE</label><input id="ownerShipNote" placeholder="Shipment / handoff note"></div><button class="btn" onclick="saveOwnerShipStock()">MOVE STOCK</button>`;
-    modal.classList.add('open');refreshOwnerShipProducts();
+    modal.classList.add('open');if(driverTotal>0)ownerShipSource.value='driver';refreshOwnerShipProducts();
   }catch(e){alert(e.message)}
 }
 async function saveOwnerShipStock(){
