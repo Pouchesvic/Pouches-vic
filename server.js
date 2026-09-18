@@ -791,52 +791,6 @@ function nextOrderNo() {
   })();
 }
 
-// ---------- Geography ----------
-function pointInRing(point, ring) {
-  const [x,y]=point; let inside=false;
-  for(let i=0,j=ring.length-1;i<ring.length;j=i++){
-    const xi=Number(ring[i][0]), yi=Number(ring[i][1]);
-    const xj=Number(ring[j][0]), yj=Number(ring[j][1]);
-    const intersects=((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/((yj-yi)||Number.EPSILON)+xi);
-    if(intersects) inside=!inside;
-  }
-  return inside;
-}
-function pointInPolygon(point, polygon) {
-  if(!Array.isArray(polygon)||!polygon.length) return false;
-  if(!pointInRing(point,polygon[0])) return false;
-  for(let i=1;i<polygon.length;i++) if(pointInRing(point,polygon[i])) return false;
-  return true;
-}
-function pointInGeoJSON(lng,lat,geojsonText) {
-  const g=typeof geojsonText==='string'?safeJson(geojsonText):geojsonText;
-  if(!g) return false;
-  let geom=g.type==='Feature'?g.geometry:g;
-  if(!geom) return false;
-  const p=[Number(lng),Number(lat)];
-  if(geom.type==='Polygon') return pointInPolygon(p,geom.coordinates);
-  if(geom.type==='MultiPolygon') return geom.coordinates.some(poly=>pointInPolygon(p,poly));
-  return false;
-}
-function validatedZoneGeoJson(value) {
-  if(value==null||text(value)==='')return '';
-  const parsed=typeof value==='string'?safeJson(value):value;
-  if(!parsed||typeof parsed!=='object')throw new Error('Zone GeoJSON must be valid JSON');
-  const geom=parsed.type==='Feature'?parsed.geometry:parsed;
-  if(!geom||!['Polygon','MultiPolygon'].includes(geom.type))throw new Error('Zone GeoJSON must be a Polygon, MultiPolygon, or Feature containing one');
-  const validPosition=p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(Number(p[0]))&&Number.isFinite(Number(p[1]))&&Number(p[0])>=-180&&Number(p[0])<=180&&Number(p[1])>=-90&&Number(p[1])<=90;
-  const validRing=ring=>Array.isArray(ring)&&ring.length>=4&&ring.every(validPosition)&&Number(ring[0][0])===Number(ring.at(-1)[0])&&Number(ring[0][1])===Number(ring.at(-1)[1]);
-  const validPolygon=poly=>Array.isArray(poly)&&poly.length>0&&poly.every(validRing);
-  const valid=geom.type==='Polygon'?validPolygon(geom.coordinates):Array.isArray(geom.coordinates)&&geom.coordinates.length>0&&geom.coordinates.every(validPolygon);
-  if(!valid)throw new Error('Zone GeoJSON coordinates must contain closed polygon rings with valid longitude/latitude pairs');
-  return jsonText(parsed);
-}
-function detectZone(tid,lng,lat) {
-  if(!Number.isFinite(Number(lng))||!Number.isFinite(Number(lat))) return null;
-  const zones=all('SELECT * FROM delivery_zones WHERE territory_id=? AND active=1 ORDER BY sort_order,name',tid);
-  return zones.find(z=>text(z.geojson) && pointInGeoJSON(Number(lng),Number(lat),z.geojson)) || null;
-}
-
 // ---------- Inventory ----------
 function ensureTerritoryProduct(tid,pid) {
   if(companyStock) return companyStock.ensureTerritoryProduct(tid,pid);
@@ -893,9 +847,6 @@ function calculateOrder({territory,items,zone,delivery_fee_override_cents=null})
   const discount=Math.max(0,pre-total);
   return {qty,subtotal_cents:subtotal,normal_delivery_fee_cents:normalDelivery,delivery_fee_cents:delivery,delivery_savings_cents:deliverySavings,delivery_discount_reason:deliverySavings?deliveryReason:'',pre_discount_total_cents:pre,customer_discount_cents:discount,total_cents:total};
 }
-function geoPolygons(value){const g=typeof value==='string'?safeJson(value):value,geom=g?.type==='Feature'?g.geometry:g;if(geom?.type==='Polygon')return [geom.coordinates];if(geom?.type==='MultiPolygon')return geom.coordinates||[];return [];}
-function segmentsCross(a,b,c,d){const orient=(p,q,r)=>(q[0]-p[0])*(r[1]-p[1])-(q[1]-p[1])*(r[0]-p[0]),o1=orient(a,b,c),o2=orient(a,b,d),o3=orient(c,d,a),o4=orient(c,d,b);return ((o1>0&&o2<0)||(o1<0&&o2>0))&&((o3>0&&o4<0)||(o3<0&&o4>0));}
-function polygonsOverlapGeo(a,b){for(const pa of geoPolygons(a))for(const pb of geoPolygons(b)){const ra=pa[0]||[],rb=pb[0]||[];if(ra[0]&&pointInPolygon(ra[0],pb))return true;if(rb[0]&&pointInPolygon(rb[0],pa))return true;for(let i=1;i<ra.length;i++)for(let j=1;j<rb.length;j++)if(segmentsCross(ra[i-1],ra[i],rb[j-1],rb[j]))return true;}return false;}
 function resolveCart(territory,cart,{allow_unlisted=false}={}) {
   const out=[];
   for(const x of Array.isArray(cart)?cart:[]){
@@ -1170,7 +1121,7 @@ function territorySnapshot(tid,lane='main') {
   const territory=one('SELECT * FROM territories WHERE id=? AND active=1 AND archived=0',tid);
   if(!territory) return null;
   const tiers=all('SELECT id,min_qty,max_qty,COALESCE(unit_price_cents,CAST(ROUND(unit_price*100) AS INTEGER)) unit_price_cents,active,sort_order FROM pricing_tiers WHERE territory_id=? AND active=1 ORDER BY sort_order,min_qty',tid);
-  const zones=all('SELECT id,name,color_label,COALESCE(fee_cents,CAST(ROUND(fee*100) AS INTEGER)) fee_cents,free_at_qty,description,rule_notes,geojson,sort_order FROM delivery_zones WHERE territory_id=? AND active=1 ORDER BY sort_order,name',tid);
+  const zones=all('SELECT id,name,color_label,COALESCE(fee_cents,CAST(ROUND(fee*100) AS INTEGER)) fee_cents,free_at_qty,description,rule_notes,sort_order FROM delivery_zones WHERE territory_id=? AND active=1 ORDER BY sort_order,name',tid);
   const storefrontDriverId=driverInventory.storefrontDriver(tid,{lane:text(lane)});if(storefrontDriverId)driverInventory.reconcileTerritory(tid);
   const products=storefrontDriverId?all(`SELECT p.id,p.brand,p.flavor,p.strength,p.image,di.sellable_qty inventory,tp.listed,tp.featured,tp.local_price_override_cents,tp.sort_order
     FROM territory_products tp JOIN products p ON p.id=tp.product_id JOIN driver_inventory di ON di.territory_id=tp.territory_id AND di.product_id=tp.product_id AND di.driver_id=?
@@ -1186,7 +1137,7 @@ function adminBootstrap() {
 function inventoryNetwork() {
   for(const t of all('SELECT id FROM territories WHERE active=1 AND archived=0')) driverInventory.reconcileTerritory(t.id);
   const catalog=companyStock.catalogList();
-  const locals=all('SELECT id,name,slug FROM territories WHERE active=1 AND archived=0 ORDER BY name').map(t=>{
+  const locals=all('SELECT id,name,slug,main_driver_id,small_orders_driver_id FROM territories WHERE active=1 AND archived=0 ORDER BY name').map(t=>{
     const drivers=all(`SELECT DISTINCT d.id,d.name,d.is_company_owner
       FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1
       WHERE d.active=1 AND d.archived=0 ORDER BY d.is_company_owner DESC,d.name`,t.id)
@@ -1225,8 +1176,11 @@ function ownerOverview(driver) {
   const payments=ids.length?all(`SELECT * FROM payments WHERE order_id IN (${marks}) AND status='received'`,...ids):[];
   const received={cash:0,etransfer:0,other:0};
   for(const p of payments){const k=p.method==='cash'?'cash':p.method==='etransfer'?'etransfer':'other';received[k]+=int(p.amount_cents);}
-  const localStock=all('SELECT sellable_qty,reserved_qty,check_stock_qty FROM driver_inventory WHERE driver_id=? AND territory_id=?',driver.id,tid)
+  const driverStock=all('SELECT sellable_qty,reserved_qty,check_stock_qty FROM driver_inventory WHERE driver_id=? AND territory_id=?',driver.id,tid)
     .reduce((s,r)=>s+int(r.sellable_qty)+int(r.reserved_qty)+int(r.check_stock_qty),0);
+  const stockCatalog=companyStock.catalogList(tid).catalog;
+  const companyReserve=stockCatalog.reduce((s,p)=>s+int(p.company?.reserve),0);
+  const localPhysical=stockCatalog.reduce((s,p)=>s+int(p.selected_territory?.linked?.physical)+int(p.selected_territory?.independent?.physical),0);
   return {
     territory:one('SELECT id,name,slug FROM territories WHERE id=?',tid),
     week_start:isoDate(week),
@@ -1236,7 +1190,10 @@ function ownerOverview(driver) {
     delivery_fees_cents:orders.reduce((s,o)=>s+int(o.delivery_fee_cents),0),
     received_cents:received,
     company_due_cents:0,
-    local_stock_cans:localStock,
+    driver_stock_cans:driverStock,
+    local_physical_cans:localPhysical,
+    company_reserve_cans:companyReserve,
+    company_home_on_hand_cans:localPhysical+companyReserve,
     recent_orders:orders.slice(0,20).map(o=>({id:o.id,order_no:o.order_no,total_cents:o.total_cents,completed_at:o.completed_at,customer_name:o.customer_name}))
   };
 }
@@ -1255,6 +1212,36 @@ function adjustDriverStock({driverId,territoryId,productId,qtyDelta,note,kind='m
       driverInventory.addSellable({driverId,territoryId,productId,qty:delta,type:kind,note});
     }
     return driverInventory.ensureRow(driverId,territoryId,productId);
+  })();
+}
+
+function transferNetworkStock({fromKind='driver',fromDriverId='',fromTerritoryId='',toKind='driver',toDriverId='',toTerritoryId='',productId,qty,note='',role='admin',actorDriverId=null}) {
+  const q=Math.max(0,int(qty)),source=text(fromKind)||'driver',destination=text(toKind)||'driver',pid=text(productId),why=text(note)||'Stock transfer';
+  if(!q) throw new Error('Enter a quantity to move.');
+  if(!pid) throw new Error('Choose a product.');
+  if(!['driver','company_reserve'].includes(source)||!['driver','company_reserve'].includes(destination)) throw new Error('Choose a valid stock source and destination.');
+  if(source==='company_reserve'&&destination==='company_reserve') throw new Error('Choose a different stock destination.');
+  if(source==='driver'&&!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',fromDriverId,fromTerritoryId)) throw new Error('Choose a valid source driver.');
+  if(destination==='driver'&&!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',toDriverId,toTerritoryId)) throw new Error('Choose a valid destination driver.');
+  if(source==='driver'&&destination==='driver'&&fromDriverId===toDriverId&&fromTerritoryId===toTerritoryId) throw new Error('Choose a different destination.');
+  return db.transaction(()=>{
+    if(source==='driver'&&destination==='driver'){
+      driverInventory.transfer({fromDriverId,toDriverId,fromTerritoryId,toTerritoryId,productId:pid,qty:q,note:why});
+      return true;
+    }
+    if(source==='company_reserve'){
+      companyStock.adjustCompanyReserve({productId:pid,qtyDelta:-q,movementType:'network_transfer_out',note:why,role,driverSourceId:actorDriverId});
+    } else {
+      driverInventory.removeSellable({driverId:fromDriverId,territoryId:fromTerritoryId,productId:pid,qty:q,type:'network_transfer_out',note:why});
+      companyStock.adjustTerritory({territoryId:fromTerritoryId,productId:pid,qtyDelta:-q,movementType:'network_transfer_out',driverId:fromDriverId,note:why,role,driverSourceId:actorDriverId});
+    }
+    if(destination==='company_reserve'){
+      companyStock.adjustCompanyReserve({productId:pid,qtyDelta:q,movementType:'network_transfer_in',note:why,role,driverSourceId:actorDriverId});
+    } else {
+      companyStock.adjustTerritory({territoryId:toTerritoryId,productId:pid,qtyDelta:q,movementType:'network_transfer_in',driverId:toDriverId,note:why,role,driverSourceId:actorDriverId});
+      driverInventory.addSellable({driverId:toDriverId,territoryId:toTerritoryId,productId:pid,qty:q,type:'network_transfer_in',note:why});
+    }
+    return true;
   })();
 }
 
@@ -1298,9 +1285,8 @@ function saveTerritoryEntity(kind,tid,b) {
   }
   if(kind==='zone'){
     const feeC=b.fee_cents!=null?int(b.fee_cents):cents(b.fee);
-    const geo=validatedZoneGeoJson(b.geojson);
-    if(b.id) run(`UPDATE delivery_zones SET name=?,color_label=?,fee=?,fee_cents=?,free_at_qty=?,active=?,description=?,rule_notes=?,geojson=?,sort_order=? WHERE id=? AND territory_id=?`,text(b.name),text(b.color_label),dollars(feeC),feeC,b.free_at_qty===''||b.free_at_qty==null?null:int(b.free_at_qty),bool(b.active),text(b.description),text(b.rule_notes),geo,int(b.sort_order),b.id,tid);
-    else run(`INSERT INTO delivery_zones(id,territory_id,name,color_label,fee,fee_cents,free_at_qty,active,description,rule_notes,geojson,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,id(),tid,text(b.name),text(b.color_label),dollars(feeC),feeC,b.free_at_qty===''||b.free_at_qty==null?null:int(b.free_at_qty),bool(b.active??true),text(b.description),text(b.rule_notes),geo,int(b.sort_order));
+    if(b.id) run(`UPDATE delivery_zones SET name=?,color_label=?,fee=?,fee_cents=?,free_at_qty=?,active=?,description=?,rule_notes=?,sort_order=? WHERE id=? AND territory_id=?`,text(b.name),text(b.color_label),dollars(feeC),feeC,b.free_at_qty===''||b.free_at_qty==null?null:int(b.free_at_qty),bool(b.active),text(b.description),text(b.rule_notes),int(b.sort_order),b.id,tid);
+    else run(`INSERT INTO delivery_zones(id,territory_id,name,color_label,fee,fee_cents,free_at_qty,active,description,rule_notes,geojson,sort_order) VALUES(?,?,?,?,?,?,?,?,? ,?,'',?)`,id(),tid,text(b.name),text(b.color_label),dollars(feeC),feeC,b.free_at_qty===''||b.free_at_qty==null?null:int(b.free_at_qty),bool(b.active??true),text(b.description),text(b.rule_notes),int(b.sort_order));
   }
   if(kind==='driver'){
     if(text(b.pin)&&!/^\d{4}$/.test(text(b.pin)))throw new Error('Driver PIN must be exactly 4 digits.');
@@ -1444,6 +1430,16 @@ const server=http.createServer(async(req,res)=>{
     const lifetimeRoute=url.pathname.match(/^\/api\/admin\/drivers\/([^/]+)\/lifetime$/);
     if(lifetimeRoute&&req.method==='PUT'){const b=await bodyJson(req);return send(res,200,finalOperations.setLifetimeDeliveries(decodeURIComponent(lifetimeRoute[1]),b.lifetime_deliveries,text(b.reason)));}
     if(url.pathname==='/api/admin/inventory-network'&&req.method==='GET') return send(res,200,inventoryNetwork());
+    if(url.pathname==='/api/admin/inventory-network/transfer'&&req.method==='POST'){
+      const b=await bodyJson(req);
+      transferNetworkStock({fromKind:text(b.from_kind),fromDriverId:text(b.from_driver_id),fromTerritoryId:text(b.from_territory_id),toKind:text(b.to_kind),toDriverId:text(b.to_driver_id),toTerritoryId:text(b.to_territory_id),productId:text(b.product_id),qty:int(b.qty),note:text(b.note)||'Stock moved in Control Room',role:'admin'});
+      return send(res,200,{ok:true,network:inventoryNetwork()});
+    }
+    if(url.pathname==='/api/admin/company-reserve/adjust'&&req.method==='POST'){
+      const b=await bodyJson(req),delta=int(b.qty_delta);if(!delta)throw new Error('Stock change cannot be zero.');if(!text(b.note))throw new Error('Add a short reason for this stock change.');
+      const qty=companyStock.adjustCompanyReserve({productId:text(b.product_id),qtyDelta:delta,movementType:text(b.kind)||'company_reserve_correction',note:text(b.note),role:'admin'});
+      return send(res,200,{ok:true,qty});
+    }
     if(url.pathname==='/api/admin/driver-inventory'&&req.method==='GET'){const tid=text(url.searchParams.get('territory_id'));if(!tid)throw new Error('Choose an area.');driverInventory.reconcileTerritory(tid);return send(res,200,{territory_id:tid,drivers:all('SELECT id,name FROM drivers WHERE active=1 AND archived=0').map(d=>({driver:d,stock:driverInventory.snapshot(tid,d.id)})).filter(x=>x.stock.length)});}
     if(url.pathname==='/api/admin/driver-inventory/transfer'&&req.method==='POST'){
       const b=await bodyJson(req),fromTerritory=text(b.from_territory_id),toTerritory=text(b.to_territory_id)||fromTerritory,fromDriver=text(b.from_driver_id),toDriver=text(b.to_driver_id);
@@ -1491,13 +1487,6 @@ const server=http.createServer(async(req,res)=>{
       run('UPDATE territories SET operating_hours=?,same_day_text=?,payment_note_text=?,delivery_map_image=COALESCE(?,delivery_map_image),updated_at=? WHERE id=?',
         text(b.operating_hours),text(b.same_day_text)||'SAME-DAY DELIVERY',text(b.payment_note_text)||'No upfront payment — pay when your order arrives.',b.delivery_map_image===undefined?null:text(b.delivery_map_image),now(),tid);
       return send(res,200,{ok:true});
-    }
-    const mapCheck=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/map-check$/);
-    if(mapCheck&&req.method==='GET'){const zones=all("SELECT name,geojson FROM delivery_zones WHERE territory_id=? AND active=1 AND COALESCE(geojson,'')<>'' ORDER BY sort_order,name",decodeURIComponent(mapCheck[1])),overlaps=[];for(let i=0;i<zones.length;i++)for(let j=i+1;j<zones.length;j++)if(polygonsOverlapGeo(zones[i].geojson,zones[j].geojson))overlaps.push([zones[i].name,zones[j].name]);return send(res,200,{overlaps});}
-    const dispatchRules=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/dispatch-rules$/);
-    if(dispatchRules&&req.method==='GET')return send(res,200,all(`SELECT r.*,p.name primary_driver_name,w.name watcher_driver_name,z.name zone_name FROM territory_dispatch_rules r JOIN drivers p ON p.id=r.primary_driver_id LEFT JOIN drivers w ON w.id=r.watcher_driver_id LEFT JOIN delivery_zones z ON z.id=r.zone_id WHERE r.territory_id=? ORDER BY r.active DESC,z.sort_order`,decodeURIComponent(dispatchRules[1])));
-    if(dispatchRules&&req.method==='POST'){
-      const tid=decodeURIComponent(dispatchRules[1]),b=await bodyJson(req),primary=text(b.primary_driver_id),watcher=text(b.watcher_driver_id),zone=text(b.zone_id);if(!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',primary,tid))throw new Error('Choose a driver who belongs to this area.');if(watcher&&!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',watcher,tid))throw new Error('Choose an oversight driver who belongs to this area.');if(zone&&!one('SELECT 1 FROM delivery_zones WHERE id=? AND territory_id=?',zone,tid))throw new Error('Choose a delivery area from this territory.');const rid=text(b.id)||id(),stamp=now();run(`INSERT INTO territory_dispatch_rules(id,territory_id,zone_id,primary_driver_id,watcher_driver_id,require_verified_location,active,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?,?) ON CONFLICT(id) DO UPDATE SET zone_id=excluded.zone_id,primary_driver_id=excluded.primary_driver_id,watcher_driver_id=excluded.watcher_driver_id,active=excluded.active,updated_at=excluded.updated_at`,rid,tid,zone||null,primary,watcher||null,bool(b.active??true),stamp,stamp);return send(res,200,{ok:true,id:rid});
     }
     const membershipsRoute=url.pathname.match(/^\/api\/admin\/drivers\/([^/]+)\/memberships$/);
     if(membershipsRoute&&req.method==='GET')return send(res,200,finalOperations.memberships(decodeURIComponent(membershipsRoute[1])));
@@ -1766,15 +1755,20 @@ const server=http.createServer(async(req,res)=>{
       }
       if(url.pathname==='/api/driver/company-inventory/transfer'&&req.method==='POST'){
         if(!driver.is_company_owner) return send(res,403,{error:'Company inventory is only available to the company owner.'});
-        const b=await bodyJson(req),toDriver=text(b.to_driver_id),toTerritory=text(b.to_territory_id);
+        const b=await bodyJson(req),toDriver=text(b.to_driver_id),toTerritory=text(b.to_territory_id),source=text(b.source)||'driver';
         if(!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',toDriver,toTerritory)) throw new Error('Choose a valid destination driver.');
-        driverInventory.transfer({fromDriverId:driver.id,toDriverId:toDriver,fromTerritoryId:driver.territory_id,toTerritoryId:toTerritory,productId:text(b.product_id),qty:int(b.qty),note:text(b.note)||'Company stock shipment'});
-        return send(res,200,{ok:true});
+        transferNetworkStock({fromKind:source==='company_reserve'?'company_reserve':'driver',fromDriverId:driver.id,fromTerritoryId:driver.territory_id,toKind:'driver',toDriverId:toDriver,toTerritoryId:toTerritory,productId:text(b.product_id),qty:int(b.qty),note:text(b.note)||'Company stock shipment',role:'driver',actorDriverId:driver.id});
+        return send(res,200,{ok:true,network:inventoryNetwork()});
       }
       if(url.pathname==='/api/driver/company-inventory/adjust'&&req.method==='POST'){
         if(!driver.is_company_owner) return send(res,403,{error:'Company inventory is only available to the company owner.'});
-        const b=await bodyJson(req),targetDriver=text(b.driver_id)||driver.id,targetTerritory=text(b.territory_id)||driver.territory_id;
-        return send(res,200,adjustDriverStock({driverId:targetDriver,territoryId:targetTerritory,productId:text(b.product_id),qtyDelta:int(b.qty_delta),note:text(b.note),kind:text(b.kind)||'owner_stock_correction',role:'driver',actorDriverId:driver.id}));
+        const b=await bodyJson(req),delta=int(b.qty_delta);if(!delta)throw new Error('Stock change cannot be zero.');if(!text(b.note))throw new Error('Add a short reason for this stock change.');
+        if(text(b.source)==='company_reserve'){
+          const qty=companyStock.adjustCompanyReserve({productId:text(b.product_id),qtyDelta:delta,movementType:text(b.kind)||'owner_reserve_correction',note:text(b.note),role:'driver',driverSourceId:driver.id});
+          return send(res,200,{ok:true,qty});
+        }
+        const targetDriver=text(b.driver_id)||driver.id,targetTerritory=text(b.territory_id)||driver.territory_id;
+        return send(res,200,adjustDriverStock({driverId:targetDriver,territoryId:targetTerritory,productId:text(b.product_id),qtyDelta:delta,note:text(b.note),kind:text(b.kind)||'owner_stock_correction',role:'driver',actorDriverId:driver.id}));
       }
       if(url.pathname==='/api/driver/quick-sale'&&req.method==='POST'){
         const b=await bodyJson(req); b.territory_id=text(b.territory_id)||driver.territory_id;if(!finalOperations.memberships(driver.id).some(x=>x.territory_id===b.territory_id))throw new Error('You do not have access to that area.');b.assigned_driver_id=driver.id; const o=createOrderCore(b,{source:text(b.source)||'driver_offsite',created_by_role:'driver',created_by_driver_id:driver.id,allow_unlisted:true,auto_complete:b.status!=='open'}); await sendBusinessNewOrderNotification(o.id); return send(res,201,o);

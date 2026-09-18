@@ -192,15 +192,6 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
   function memberships(driverId){return all(`SELECT m.*,t.name territory_name,t.slug territory_slug FROM driver_territory_memberships m JOIN territories t ON t.id=m.territory_id WHERE m.driver_id=? AND m.active=1 AND t.active=1 AND t.archived=0 ORDER BY CASE m.role WHEN 'supervisor' THEN 0 ELSE 1 END,t.name`,driverId);}
   function canAccessOrder(driverId,order){return order.assigned_driver_id===driverId||!!one('SELECT 1 FROM order_watchers WHERE order_id=? AND driver_id=?',order.id,driverId);}
   function canFulfillOrder(driverId,order){return !!order&&order.assigned_driver_id===driverId;}
-  function assignByVerifiedZone(orderId) {
-    const order=one('SELECT * FROM orders WHERE id=?',orderId); if(!order||order.manual_location||!order.location_confirmed||!order.zone_id)return order;
-    const territory=one('SELECT slug FROM territories WHERE id=?',order.territory_id); if(territory?.slug==='victoria')return order;
-    const rule=one(`SELECT * FROM territory_dispatch_rules WHERE territory_id=? AND (zone_id=? OR zone_id IS NULL) AND active=1 ORDER BY CASE WHEN zone_id=? THEN 0 ELSE 1 END LIMIT 1`,order.territory_id,order.zone_id,order.zone_id); if(!rule)return order;
-    run('UPDATE orders SET assigned_driver_id=?,updated_at=? WHERE id=?',rule.primary_driver_id,now(),orderId);
-    if(rule.watcher_driver_id) run(`INSERT OR IGNORE INTO order_watchers(order_id,driver_id,role,created_at) VALUES(?,?, 'oversight',?)`,orderId,rule.watcher_driver_id,now());
-    return one('SELECT * FROM orders WHERE id=?',orderId);
-  }
-
   function createAction({kind,territoryId,orderId=null,actorRole,actorDriverId=null,recipientType='',recipientDriverId=null,note='',financialEffect='none',totalAmount=0,lines=[]}){
     const actionId=id(),stamp=now();
     run(`INSERT INTO operational_actions(id,kind,territory_id,order_id,actor_role,actor_driver_id,recipient_type,recipient_driver_id,note,financial_effect,total_amount_cents,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,actionId,kind,territoryId,orderId,actorRole,actorDriverId,recipientType,recipientDriverId,note,financialEffect,int(totalAmount),stamp);
@@ -266,5 +257,5 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
 
 
   installSchema(); migrateAndSeed();
-  return { scheduleConfig,saveSchedule,validateSchedule,applyOrderDetails,memberships,canAccessOrder,canFulfillOrder,assignByVerifiedZone,adminFree,takeForSelf,promotionalCan,swap,editActiveOrder,recalculateActiveOrder,recordOffsite,setFinalTotal,lifetimeDeliveries,setLifetimeDeliveries,attachDriverInventory };
+  return { scheduleConfig,saveSchedule,validateSchedule,applyOrderDetails,memberships,canAccessOrder,canFulfillOrder,adminFree,takeForSelf,promotionalCan,swap,editActiveOrder,recalculateActiveOrder,recordOffsite,setFinalTotal,lifetimeDeliveries,setLifetimeDeliveries,attachDriverInventory };
 };

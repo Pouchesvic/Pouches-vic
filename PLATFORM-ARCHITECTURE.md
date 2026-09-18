@@ -1,6 +1,27 @@
-# PouchesVic Reusable Commerce Platform Extension
+# Pouches Local Reusable Commerce Platform
 
-This extension keeps the current PouchesVic storefront/order engine intact while adding business-neutral expansion points.
+Pouches Local is one application with multiple customer-facing **Locals**. Local Victoria, Local Sooke, Local Prince George and future Locals share the same Control Room, driver app and database while keeping their own storefront settings, hours, routing and physical inventory.
+
+## Local and driver model
+- A Local is a storefront/service area, not a driver.
+- Every driver has an individual four-digit PIN and exact physical inventory.
+- Each Local chooses a Main driver and may choose a separate Small Orders driver plus quantity threshold.
+- A driver may belong to more than one Local. Login is always into a specific Local context.
+- Admin may grant a driver **Can manage Local hours** without giving that driver full Control Room access.
+- New Locals default to 9:00 AM–5:00 PM daily.
+- The default same-day guarantee cutoff is 15 minutes before closing. Orders inside the final 15 minutes require the customer to acknowledge that delivery today is not guaranteed. At closing, same-day ordering stops.
+- A final 45-minute delivery window may extend at most 15 minutes beyond the final closing time.
+
+## Company Home — Prince George
+- Local Prince George is Company Home.
+- The Company Owner/Bossman has a normal driver login plus Company Home stock and sales views.
+- Bossman’s own completed sales create no debt back to Company.
+- Company Reserve lives at Prince George and is hidden from storefronts until moved to a driver.
+- Bossman or Admin can move physical stock from Company Reserve or a driver to any valid driver/Local.
+- Driver supervisors can hand stock onward to other drivers. Cross-Local moves preserve the stock accounting pool.
+- The Control Room **Stock** screen is the single Company-wide “where every can is” view and supports Add Stock, Move Stock and Fix Stock.
+- Lost, stolen, found and recount corrections are audited. Driver and storefront availability use the same inventory records.
+
 
 ## Installed but off / switchable
 - Generic business labels (business name, product field labels, item unit labels)
@@ -71,11 +92,12 @@ The photo table includes a `storage_provider`/`storage_key` abstraction so local
 The platform extension now also installs the lightweight customer/storefront features requested for the current PouchesVic flow:
 
 - Separate 19+ entry screen with Control Room ON/OFF switch. This is separate from the checkout ID/age acknowledgement, which remains mandatory on every order.
-- Address-first storefront flow. Mapbox public-token support provides live address suggestions while typing; if the token is not configured, the current manual-zone flow remains as a safe fallback.
-- Server-side delivery-zone resolution from coordinates plus saved exceptions for an exact address, an entire street, or a known customer. A saved exception can choose any active zone and optionally override the delivery fee (including $0).
-- Territory-specific editable Store Notice and Help / Customer Service block, both hidden until Admin turns them on.
+- Customer checkout does **not** use live GPS, Mapbox, address autocomplete, polygon lookup, or automatic zone detection. The customer types the delivery address, views the Local’s still delivery-area map, and selects the matching delivery area.
+- The server validates that the selected delivery area is active and calculates the delivery fee itself, so a customer request cannot forge a cheaper fee.
+- The only live-map behavior is in the driver/admin order view: tapping the customer address opens normal map/navigation directions.
+- Local-specific editable Store Notice and Help / Customer Service block, both hidden until Admin turns them on.
 - Optional product star-rating display with simple Admin-set rating/review count. Product Ratings is OFF by default.
-- Optional Delivery Method screen is installed but OFF by default. Current PouchesVic continues to assume local same-day delivery.
+- Optional Delivery Method screen is installed but OFF by default. Current Pouches Local storefronts continue to use local same-day delivery.
 - Guest/ accountless customer recognition using normalized phone/email/address+name. Existing order history is backfilled when the extension starts, so known repeat customers can be recognized without registration.
 - Returning/Loyal Customer badges on customer confirmation and driver/admin views. These are informational only and do not change ID/compliance behavior.
 - Persistent internal customer notes shared across future orders. Drivers can add a customer note; Control Room can view/edit customer records, confirm matches, correct contact data, and merge duplicate customer records.

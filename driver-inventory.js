@@ -67,7 +67,6 @@ module.exports = function createDriverInventory({ db, companyStock, now, id, tex
   function primaryDriver(territoryId) {
     const territory=one('SELECT * FROM territories WHERE id=?',territoryId);if(!territory)return null;
     if(validLocalDriver(territoryId,territory.main_driver_id))return territory.main_driver_id;
-    const dispatch=one('SELECT primary_driver_id FROM territory_dispatch_rules WHERE territory_id=? AND active=1 ORDER BY CASE WHEN zone_id IS NULL THEN 1 ELSE 0 END,created_at LIMIT 1',territoryId);if(validLocalDriver(territoryId,dispatch?.primary_driver_id))return dispatch.primary_driver_id;
     if(validLocalDriver(territoryId,territory.default_driver_id))return territory.default_driver_id;
     return one(`SELECT d.id FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1 WHERE d.active=1 AND d.archived=0 ORDER BY CASE WHEN d.role='operations_admin' OR m.role='supervisor' THEN 0 ELSE 1 END,d.created_at,d.name LIMIT 1`,territoryId)?.id||null;
   }
@@ -163,7 +162,7 @@ module.exports = function createDriverInventory({ db, companyStock, now, id, tex
 
   function transfer({fromDriverId,toDriverId,fromTerritoryId,toTerritoryId,productId,qty,note=''}){
     const q=Math.max(0,int(qty));if(!q)throw new Error('Enter a quantity to move.');reconcileProduct(fromTerritoryId,productId);if(available(fromDriverId,fromTerritoryId,productId)<q)throw new Error('The source driver does not have enough available cans.');
-    db.transaction(()=>{change(fromDriverId,fromTerritoryId,productId,{sellable:-q,type:'driver_handoff_out',note});if(fromTerritoryId!==toTerritoryId){companyStock.adjustTerritory({territoryId:fromTerritoryId,productId,qtyDelta:-q,movementType:'driver_cross_area_transfer_out',note,role:'admin'});companyStock.adjustTerritory({territoryId:toTerritoryId,productId,qtyDelta:q,movementType:'driver_cross_area_transfer_in',note,role:'admin'});}change(toDriverId,toTerritoryId,productId,{sellable:q,type:'driver_handoff_in',note});})();return true;
+    db.transaction(()=>{change(fromDriverId,fromTerritoryId,productId,{sellable:-q,type:'driver_handoff_out',note});if(fromTerritoryId!==toTerritoryId)companyStock.transferTerritorySellable({fromTerritoryId,toTerritoryId,productId,qty:q,movementType:'driver_cross_area_transfer',note,role:'admin'});change(toDriverId,toTerritoryId,productId,{sellable:q,type:'driver_handoff_in',note});})();return true;
   }
 
   return {primaryDriver,storefrontDriver,laneAllowed,reconcileProduct,reconcileTerritory,available,snapshot,reserveItem,releaseOrder,finalizeOrder,holdMissing,resolveCheckStock,addSellable,removeSellable,canReassign,reassignOrder,transfer,ensureRow};

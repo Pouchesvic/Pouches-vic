@@ -383,6 +383,27 @@ module.exports = function createCompanyStock({ db, now, id, text, int, bool, jso
     return syncLegacyInventory(territoryId, productId);
   }
 
+  function transferTerritorySellable({ fromTerritoryId, toTerritoryId, productId, qty, movementType='driver_cross_area_transfer', note='', role='admin', driverSourceId=null }) {
+    const q=Math.max(0,int(qty));if(!q)throw new Error('Enter a quantity to move.');
+    if(!fromTerritoryId||!toTerritoryId||fromTerritoryId===toTerritoryId)throw new Error('Choose two different Locals.');
+    ensureTerritoryProduct(fromTerritoryId,productId);ensureTerritoryProduct(toTerritoryId,productId);
+    return db.transaction(()=>{
+      let remaining=q;
+      for(const pool of ['linked','independent']){
+        if(!remaining)break;
+        const row=one('SELECT * FROM territory_products WHERE territory_id=? AND product_id=?',fromTerritoryId,productId);
+        const take=Math.min(remaining,int(row[stockColumn(pool,'sellable')]));
+        if(!take)continue;
+        const transferId=id();
+        updateBucket(fromTerritoryId,productId,pool,'sellable',-take,{movementType:movementType+'_out',note,role,driverSourceId,relatedPool:pool+'_sellable',metadata:{transfer_id:transferId,to_territory_id:toTerritoryId}});
+        updateBucket(toTerritoryId,productId,pool,'sellable',take,{movementType:movementType+'_in',note,role,driverSourceId,relatedPool:pool+'_sellable',metadata:{transfer_id:transferId,from_territory_id:fromTerritoryId}});
+        remaining-=take;
+      }
+      if(remaining)throw new Error('The source Local does not have enough available cans.');
+      return true;
+    })();
+  }
+
   function adjustCompanyReserve({ productId, qtyDelta, movementType = 'manual_correction', note = '', role = 'system', driverSourceId = null }) {
     const delta = int(qtyDelta);
     if (!text(productId)) throw new Error('Choose a product.');
@@ -714,6 +735,7 @@ module.exports = function createCompanyStock({ db, now, id, text, int, bool, jso
     releaseOrder,
     finalizeOrder,
     adjustTerritory,
+    transferTerritorySellable,
     adjustCompanyReserve,
     setPhysicalTarget,
     setAvailableTarget,
