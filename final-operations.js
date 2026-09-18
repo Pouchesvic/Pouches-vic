@@ -140,8 +140,11 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
     if(sooke&&driver3) run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,created_at,updated_at) VALUES(?,?,'driver',1,?,?) ON CONFLICT(driver_id,territory_id) DO UPDATE SET active=1,updated_at=excluded.updated_at`,driver3.id,sooke.id,stamp,stamp);
     if(sooke&&driver3){
       run('UPDATE territories SET main_driver_id=COALESCE(main_driver_id,?),default_driver_id=COALESCE(default_driver_id,?),updated_at=? WHERE id=?',driver3.id,driver3.id,stamp,sooke.id);
-      const dispatch=one('SELECT id FROM territory_dispatch_rules WHERE territory_id=? AND zone_id IS NULL AND active=1 ORDER BY created_at LIMIT 1',sooke.id);
-      if(!dispatch)run(`INSERT INTO territory_dispatch_rules(id,territory_id,zone_id,primary_driver_id,watcher_driver_id,require_verified_location,active,created_at,updated_at) VALUES(?,?,NULL,?,?,1,1,?,?)`,id(),sooke.id,driver3.id,driver1?.id||null,stamp,stamp);
+    }
+    if(sooke&&driver1&&setting('remove_legacy_sooke_oversight_v1','')!=='done'){
+      run("UPDATE driver_territory_memberships SET active=0,updated_at=? WHERE driver_id=? AND territory_id=? AND role='supervisor'",stamp,driver1.id,sooke.id);
+      run('UPDATE territory_dispatch_rules SET active=0,watcher_driver_id=NULL,updated_at=? WHERE territory_id=? AND watcher_driver_id=?',stamp,sooke.id,driver1.id);
+      setSetting('remove_legacy_sooke_oversight_v1','done');
     }
     if(sooke) for(const product of all('SELECT id FROM products')) companyStock.ensureTerritoryProduct(sooke.id,product.id);
     if(victoria && columns('platform_order_notification_recipients').has('territory_id')) run("UPDATE platform_order_notification_recipients SET territory_id=? WHERE lower(email)='vicpouches@protonmail.com' AND territory_id IS NULL",victoria.id);
@@ -180,7 +183,7 @@ module.exports = function createFinalOperations({ db, companyStock, now, id, tex
 
   function applyOrderDetails(orderId, body, territory, schedule) {
     const manual=bool(body.manual_location),meeting=text(body.meeting_instructions); if(manual&&!meeting) throw new Error('Tell us where to meet you.');
-    run(`UPDATE orders SET schedule_type=?,requested_delivery_date=?,requested_window_start=?,requested_window_end=?,requested_window_label=?,territory_timezone_snapshot=?,outside_hours_message=?,manual_location=?,meeting_instructions=?,location_confirmed=?,final_total_pending=?,verified_address=?,updated_at=? WHERE id=?`,schedule.type,schedule.date,schedule.start,schedule.end,schedule.label,schedule.timezone,schedule.message,manual,meeting,manual?0:1,manual?1:0,manual?'':text(body.address),now(),orderId);
+    run(`UPDATE orders SET schedule_type=?,requested_delivery_date=?,requested_window_start=?,requested_window_end=?,requested_window_label=?,territory_timezone_snapshot=?,outside_hours_message=?,manual_location=?,meeting_instructions=?,location_confirmed=1,final_total_pending=0,verified_address=?,updated_at=? WHERE id=?`,schedule.type,schedule.date,schedule.start,schedule.end,schedule.label,schedule.timezone,schedule.message,manual,meeting,text(body.address),now(),orderId);
     if(manual) addOrderEvent(orderId,'location_needs_confirmation','Location needs confirmation',{meeting_instructions:meeting},{attention:1,created_by_role:'system',visible_to_customer:true});
     if(schedule.type==='outside_hours') addOrderEvent(orderId,'outside_hours_request','Outside-hours delivery requested',{message:schedule.message,date:schedule.date},{attention:1,created_by_role:'system',visible_to_customer:true});
     if(schedule.type==='late_same_day') addOrderEvent(orderId,'late_same_day','Late order — delivery today is not guaranteed',{message:schedule.message,date:schedule.date},{attention:1,created_by_role:'system',visible_to_customer:true});

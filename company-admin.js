@@ -8,7 +8,7 @@
     return clean ? `${clean} mg` : '';
   };
   const q = id => document.getElementById(id);
-  const state = { data:null, search:'', filter:'all', page:1, pageSize:24, inventoryView:'company', busy:false };
+  const state = { data:null, network:null, search:'', filter:'all', page:1, pageSize:24, inventoryView:'company', busy:false };
   const request = (url, options = {}) => window.api(url, options);
   const activeTerritory = () => {
     try { return typeof T !== 'undefined' ? T?.territory : null; } catch { return null; }
@@ -45,6 +45,11 @@
     const territory = activeTerritory();
     state.data = await request(`/api/admin/company-stock/catalog${territory ? `?territory_id=${encodeURIComponent(territory.id)}` : ''}`);
     return state.data;
+  }
+  async function loadNetwork(force=false){
+    if(state.network&&!force)return state.network;
+    state.network=await request('/api/admin/inventory-network');
+    return state.network;
   }
 
   function matchProducts(products, territoryId = '') {
@@ -238,7 +243,7 @@
   }
 
   async function refreshCurrent() {
-    state.data=null;
+    state.data=null;state.network=null;
     if (typeof currentTab !== 'undefined' && ['inventory','stock'].includes(currentTab)) await renderCompanyInventory(); else await renderProductLibrary();
   }
 
@@ -247,13 +252,23 @@
     return `<div class="cs-subnav">${views.map(([value,label])=>`<button class="cs-filter ${state.inventoryView===value?'active':''}" data-cs-view="${E(value)}">${E(label)}</button>`).join('')}</div>`;
   }
 
+  function networkSummaryHtml(){
+    const n=state.network;if(!n)return '';
+    const localRows=(n.locals||[]).map(l=>{
+      const driverTotal=(l.drivers||[]).reduce((sum,d)=>sum+(d.stock||[]).reduce((x,r)=>x+Number(r.sellable_qty||0)+Number(r.reserved_qty||0)+Number(r.check_stock_qty||0),0),0);
+      const held=(l.unassigned||[]).reduce((sum,x)=>sum+Number(x.qty||0),0);
+      return `<div class="line"><span><b>Local ${E(l.territory.name)}</b><br><span class="muted">${(l.drivers||[]).map(d=>`${E(d.driver.name)}: ${(d.stock||[]).reduce((x,r)=>x+Number(r.sellable_qty||0)+Number(r.reserved_qty||0)+Number(r.check_stock_qty||0),0)}`).join(' • ')}${held?` • held/unassigned: ${held}`:''}</span></span><b>${driverTotal+held}</b></div>`;
+    }).join('');
+    const reserve=(n.company_reserve||[]).reduce((sum,x)=>sum+Number(x.qty||0),0);
+    return `<div class="card" style="border:2px solid #111"><div class="row"><div><b>ALL POUCHES LOCAL STOCK</b><div class="muted">One live count across every Local and driver.</div></div><div style="font-size:28px;font-weight:1000">${Number(n.grand_total_cans)||0}</div></div>${reserve?`<div class="line"><span>Prince George — Company Reserve</span><b>${reserve}</b></div>`:''}<div class="hr"></div>${localRows}<div class="two" style="margin-top:10px"><button class="btn" id="csNetworkMove">MOVE DRIVER STOCK</button><button class="btn ghost" id="csNetworkFix">FIX DRIVER STOCK</button></div></div>`;
+  }
   async function renderCompanyInventory() {
     installStyles(); const host=q('view'); host.innerHTML='<div class="card">Loading Stock…</div>';
     try {
-      await load();
-      const territory=activeTerritory();if(!territory)throw new Error('Choose an area first.');
-      host.innerHTML=`<div class="row"><div><div class="cs-title">Stock</div><div class="muted">${E(territory.name)}</div></div><button id="csStockHistory" class="btn ghost">HISTORY</button></div><div class="actions"><button id="csStockAdd" class="btn">ADD STOCK</button><button id="csStockMove" class="btn ghost">MOVE STOCK</button></div><div id="csInventoryBody"></div>`;
-      renderSimpleStock(territory.id);q('csStockHistory').onclick=renderHistoryView;q('csStockAdd').onclick=()=>openSimpleReceive(territory.id);q('csStockMove').onclick=openTransfer;
+      await Promise.all([load(),loadNetwork(true)]);
+      const territory=activeTerritory();if(!territory)throw new Error('Choose a Local first.');
+      host.innerHTML=`<div class="row"><div><div class="cs-title">Stock</div><div class="muted">Local ${E(territory.name)}</div></div><button id="csStockHistory" class="btn ghost">HISTORY</button></div>${networkSummaryHtml()}<div class="actions"><button id="csStockAdd" class="btn">ADD STOCK</button><button id="csStockMove" class="btn ghost">MOVE COMPANY / LOCAL STOCK</button></div><div id="csInventoryBody"></div>`;
+      renderSimpleStock(territory.id);q('csStockHistory').onclick=renderHistoryView;q('csStockAdd').onclick=()=>openSimpleReceive(territory.id);q('csStockMove').onclick=openTransfer;q('csNetworkMove').onclick=openNetworkMove;q('csNetworkFix').onclick=openNetworkFix;
     } catch(error){host.innerHTML=`<div class="warn"><b>Stock could not load.</b><br>${E(error.message)}</div>`;}
   }
 
@@ -262,6 +277,35 @@
   async function savePhysicalTarget(product,territoryId,card){try{const before=totalPhysical(territoryFor(product,territoryId)),target=Number(card.querySelector('[data-physical]').value),result=await request('/api/admin/company-stock/physical-target',{method:'POST',body:JSON.stringify({territoryId,productId:product.id,target})});if(result.added_held>0&&confirm(`${result.added_held} cans were added. Make them available to customers now?\n\nOK — MAKE AVAILABLE\nCancel — NOT NOW`)){const current=Number(card.querySelector('[data-available]').value)||0;await request('/api/admin/company-stock/available-target',{method:'POST',body:JSON.stringify({territoryId,productId:product.id,target:current+result.added_held})});}alert(`Updated${target===before?' — no quantity change':''}.`);await refreshCurrent();}catch(e){alert(e.message)}}
   async function saveAvailableTarget(product,territoryId,card){try{await request('/api/admin/company-stock/available-target',{method:'POST',body:JSON.stringify({territoryId,productId:product.id,target:Number(card.querySelector('[data-available]').value)})});alert('Saved.');await refreshCurrent();}catch(e){alert(e.message)}}
   function openSimpleReceive(territoryId){modal(`<h2>Add Stock</h2><div class="field"><label>PRODUCT</label><select id="csSimpleProduct">${productOptions()}</select></div><div class="field"><label>HOW MANY CANS ARRIVED?</label><input id="csSimpleQty" type="number" min="1"></div><div class="field"><label>WHERE ARE THEY NOW?</label><select id="csSimpleWhere"><option value="company_reserve">Company</option>${state.data.territories.map(t=>`<option value="territory:${E(t.id)}" ${t.id===territoryId?'selected':''}>${E(t.name)}</option>`).join('')}</select></div><label class="checkrow"><input id="csSimpleAvailable" type="checkbox"> Make them available on the website now</label><button id="csSimpleSave" class="btn" style="width:100%">SAVE</button>`);q('csSimpleSave').onclick=async()=>{const where=q('csSimpleWhere').value,qty=Math.max(0,Number(q('csSimpleQty').value)||0),productId=q('csSimpleProduct').value,makeAvailable=q('csSimpleAvailable').checked;if(!qty)return alert('Enter how many cans arrived.');const territory=where.startsWith('territory:')?where.slice(10):'';try{await request('/api/admin/company-stock/receive',{method:'POST',body:JSON.stringify({product_id:productId,target:territory?'linked_territory':'company_reserve',territory_id:territory,qty,sellable_qty:makeAvailable?qty:0})});if(territory&&!makeAvailable&&confirm(`You added ${qty} cans, but customers still can't buy them. Make these available now?\n\nOK — MAKE AVAILABLE\nCancel — NOT NOW`)){const row=state.data.catalog.find(x=>x.id===productId),current=territoryFor(row,territory)?.customer_sellable||0;await request('/api/admin/company-stock/available-target',{method:'POST',body:JSON.stringify({territoryId:territory,productId,target:current+qty})});}closeModal();await refreshCurrent();if(!territory&&confirm(`These cans are in Company Stock. Send some to ${activeTerritory()?.name||'an area'} now?\n\nOK — MOVE STOCK\nCancel — NOT NOW`)){openTransfer();q('csTransferProduct').value=productId;q('csTransferFrom').value='reserve';q('csTransferTo').value=`territory:${territoryId}`;}}catch(error){alert(error.message)}};}
+
+  function networkDrivers(){
+    const out=[];for(const l of state.network?.locals||[])for(const d of l.drivers||[])out.push({territory:l.territory,driver:d.driver,stock:d.stock||[]});return out;
+  }
+  function networkDriverOptions(selected=''){
+    return networkDrivers().map(x=>`<option value="${E(x.territory.id)}|${E(x.driver.id)}" ${selected===x.driver.id?'selected':''}>Local ${E(x.territory.name)} — ${E(x.driver.name)}</option>`).join('');
+  }
+  function openNetworkMove(){
+    modal(`<h2>Move Driver Stock</h2><div class="good">Use this when physical cans move from one driver to another, including between Locals. Both storefronts update from the same transaction.</div><div class="field"><label>FROM</label><select id="csMoveFrom">${networkDriverOptions()}</select></div><div class="field"><label>PRODUCT</label><select id="csMoveProduct"></select></div><div class="field"><label>TO</label><select id="csMoveTo">${networkDriverOptions()}</select></div><div class="field"><label>QUANTITY</label><input id="csMoveQty" type="number" min="1" value="1"></div><div class="field"><label>NOTE</label><input id="csMoveNote" placeholder="Shipment / handoff note"></div><button class="btn" id="csMoveSave" style="width:100%">MOVE STOCK</button>`);
+    q('csMoveFrom').onchange=refreshNetworkMoveProducts;refreshNetworkMoveProducts();q('csMoveSave').onclick=saveNetworkMove;
+  }
+  function refreshNetworkMoveProducts(){
+    const [tid,did]=(q('csMoveFrom')?.value||'|').split('|'),entry=networkDrivers().find(x=>x.territory.id===tid&&x.driver.id===did),products=(entry?.stock||[]).filter(x=>Number(x.sellable_qty)>0);
+    q('csMoveProduct').innerHTML=products.map(x=>`<option value="${E(x.product_id)}">${E(x.brand)} ${E(x.flavor)} — ${Number(x.sellable_qty)} available</option>`).join('');
+  }
+  async function saveNetworkMove(){
+    try{const [fromTerritory,fromDriver]=(q('csMoveFrom').value||'|').split('|'),[toTerritory,toDriver]=(q('csMoveTo').value||'|').split('|');if(fromDriver===toDriver&&fromTerritory===toTerritory)return alert('Choose a different destination.');await request('/api/admin/driver-inventory/transfer',{method:'POST',body:JSON.stringify({from_driver_id:fromDriver,to_driver_id:toDriver,from_territory_id:fromTerritory,to_territory_id:toTerritory,product_id:q('csMoveProduct').value,qty:q('csMoveQty').value,note:q('csMoveNote').value})});closeModal();state.data=null;state.network=null;await renderCompanyInventory();}catch(e){alert(e.message)}
+  }
+  function openNetworkFix(){
+    modal(`<h2>Fix Driver Stock</h2><div class="good">For a physical recount, lost can, stolen can, or stock that was found. Every correction stays in inventory history.</div><div class="field"><label>DRIVER / LOCAL</label><select id="csFixDriver">${networkDriverOptions()}</select></div><div class="field"><label>PRODUCT</label><select id="csFixProduct"></select></div><div class="field"><label>WHAT HAPPENED?</label><select id="csFixKind"><option value="found">FOUND / ADD</option><option value="lost">LOST / REMOVE</option><option value="stolen">STOLEN / REMOVE</option><option value="manual_correction">OTHER CORRECTION / REMOVE</option></select></div><div class="field"><label>QUANTITY</label><input id="csFixQty" type="number" min="1" value="1"></div><div class="field"><label>REASON / NOTE</label><input id="csFixNote" placeholder="Required"></div><button class="btn" id="csFixSave" style="width:100%">UPDATE STOCK</button>`);
+    q('csFixDriver').onchange=refreshNetworkFixProducts;refreshNetworkFixProducts();q('csFixSave').onclick=saveNetworkFix;
+  }
+  function refreshNetworkFixProducts(){
+    const [tid,did]=(q('csFixDriver')?.value||'|').split('|'),entry=networkDrivers().find(x=>x.territory.id===tid&&x.driver.id===did),products=entry?.stock||[];
+    q('csFixProduct').innerHTML=products.map(x=>`<option value="${E(x.product_id)}">${E(x.brand)} ${E(x.flavor)} — ${Number(x.sellable_qty)||0} available</option>`).join('');
+  }
+  async function saveNetworkFix(){
+    try{const [territoryId,driverId]=(q('csFixDriver').value||'|').split('|'),kind=q('csFixKind').value,qty=Math.max(1,Math.trunc(Number(q('csFixQty').value)||1)),delta=kind==='found'?qty:-qty;await request('/api/admin/driver-inventory/adjust',{method:'POST',body:JSON.stringify({driver_id:driverId,territory_id:territoryId,product_id:q('csFixProduct').value,qty_delta:delta,kind:'stock_'+kind,note:q('csFixNote').value})});closeModal();state.data=null;state.network=null;await renderCompanyInventory();}catch(e){alert(e.message)}
+  }
 
   function renderCompanyView() {
     const body=q('csInventoryBody'), products=state.data.catalog.filter(product=>!product.archived);

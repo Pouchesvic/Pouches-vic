@@ -61,9 +61,8 @@
       <div class="three"><div class="field"><label>GROUP FIELD</label><input id="ppGroup" value="${E(p.product_group_label)}" placeholder="Brand / Category"></div><div class="field"><label>PRODUCT FIELD</label><input id="ppProduct" value="${E(p.product_name_label)}" placeholder="Flavour / Item"></div><div class="field"><label>VARIANT FIELD</label><input id="ppVariant" value="${E(p.variant_label)}" placeholder="Size / Strength"></div></div>
       <div class="two"><div class="field"><label>ONE ITEM IS CALLED</label><input id="ppSingular" value="${E(p.item_singular)}"></div><div class="field"><label>MULTIPLE ITEMS ARE CALLED</label><input id="ppPlural" value="${E(p.item_plural)}"></div></div>
       <label style="display:flex;gap:9px;align-items:center;margin:12px 0"><input id="ppAge" type="checkbox" style="width:20px;height:20px" ${p.entry_age_gate_enabled!==false?'checked':''}><span><b>19+ ENTRY SCREEN</b><div class="muted">Customer must click 19+ before entering. This can be turned off. The checkout ID box remains mandatory either way.</div></span></label>
-      <div class="good"><b>ADDRESS AT CHECKOUT</b><br>Customers enter the store immediately after the 19+ gate. At checkout, they select a real Mapbox address and the saved polygon or Delivery Exception determines the zone automatically.</div>
+      <div class="good"><b>ADDRESS & DELIVERY AREA AT CHECKOUT</b><br>Customers type their address, check the Local delivery-area map, and select their own delivery area. No live customer map or automatic GPS zoning is used.</div>
       <div class="field"><label>MANDATORY CHECKOUT ID / AGE BOX WORDING</label><input id="ppAgeText" value="${E(p.age_acknowledgement_text||'')}"></div>
-      <div class="field"><label>MAPBOX PUBLIC TOKEN — LIVE ADDRESS SUGGESTIONS</label><input id="ppMapbox" value="${E(config.integrations?.mapbox_public_token||'')}" placeholder="pk..."><div class="muted">Leave blank until configured. This is a public browser token, not a secret key.</div></div>
       <div class="hr"></div><h3>Order Notification Emails</h3><div class="muted">Each enabled address receives the full business notification once when a new order is placed. Customer confirmation email is separate. Later status and payment changes do not send these notifications.</div><div id="pvRecipientRows"></div><button type="button" class="btn ghost" id="pvAddRecipient" style="width:100%">ADD RECIPIENT EMAIL</button>
       <div class="hr"></div><h3>Social Media Links</h3><label style="display:flex;gap:8px;align-items:center;margin:10px 0"><input id="ppShowSocial" type="checkbox" style="width:20px;height:20px" ${config.show_social_links?'checked':''}><b>SHOW SOCIAL LINKS</b></label><div class="muted">A footer icon appears only when the master switch and that link are enabled and its URL is valid.</div><div id="pvSocialRows"></div><button type="button" class="btn ghost" id="pvAddSocial" style="width:100%">ADD SOCIAL LINK</button>
       <div class="hr"></div><h3>Modules</h3>
@@ -129,10 +128,9 @@
         item_plural: document.getElementById('ppPlural').value,
         entry_age_gate_enabled: document.getElementById('ppAge').checked,
         address_first_enabled: false,
-        address_autocomplete_enabled: true,
+        address_autocomplete_enabled: false,
         age_acknowledgement_text: document.getElementById('ppAgeText').value
       },
-      integrations: { mapbox_public_token: document.getElementById('ppMapbox').value },
       modules,
       notification_recipients: collectRecipients(),
       show_social_links: document.getElementById('ppShowSocial').checked,

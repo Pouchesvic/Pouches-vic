@@ -420,7 +420,7 @@ function publicSocialLinks() {
   return allSocialLinks().filter(x => x.enabled && validHttpUrl(x.url)).map(x => ({ id:x.id, platform:x.platform, label:x.label, url:x.url }));
 }
 function notificationRecipients(territoryId = '') { const rows=territoryId?all('SELECT * FROM platform_order_notification_recipients WHERE territory_id=? ORDER BY sort_order,email',territoryId):all('SELECT * FROM platform_order_notification_recipients ORDER BY sort_order,email');return rows.map(x => ({ ...x, enabled: !!x.enabled })); }
-function platformConfig() { return { profile: getProfile(), modules: getModules(), integrations: { mapbox_public_token: tableExists('settings') ? (one("SELECT value FROM settings WHERE key='mapbox_public_token'")?.value || '') : '' }, show_social_links: socialMasterEnabled(), social_links: publicSocialLinks() }; }
+function platformConfig() { return { profile: getProfile(), modules: getModules(), show_social_links: socialMasterEnabled(), social_links: publicSocialLinks() }; }
 function adminPlatformConfig() { return { ...platformConfig(), notification_recipients: notificationRecipients(), social_links: allSocialLinks() }; }
 
 function parseCookies(req) {
@@ -509,11 +509,6 @@ function saveConfig(body) {
     age_acknowledgement_text: text(next.age_acknowledgement_text) || 'I confirm that I have valid ID and meet the legal age requirement for this purchase.'
   };
   run("UPDATE platform_businesses SET name=?,config_json=?,updated_at=? WHERE id='primary'", allowedProfile.business_name, jsonText(allowedProfile), now());
-  if (body.integrations && Object.prototype.hasOwnProperty.call(body.integrations, 'mapbox_public_token')) {
-    const tok = text(body.integrations.mapbox_public_token);
-    run(`INSERT INTO settings(key,value,updated_at) VALUES('mapbox_public_token',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, tok, now());
-  }
-
   const requested = body.modules || {};
   const currentModules = getModules();
   for (const [key, value] of Object.entries(requested)) {
@@ -1049,18 +1044,18 @@ function corePublicPost(pathname, body) {
 }
 async function createPublicPlatformOrder(body) {
   if (!body.age_acknowledged) throw new Error('ID / age acknowledgement is required');
-  const manual=bool(body.manual_location),quote=manual?null:resolveDeliveryQuote(body);
-  if (!manual&&!quote.serviceable){if(quote.territory_mismatch)throw new Error(`This address is in ${quote.territory_mismatch.territory.name}. Switch delivery areas or go back.`);throw new Error('That address is outside the current delivery area');}
-  const trusted = { ...body, zone_id: manual?null:quote.zone.id };
+  const terr=one('SELECT id,name,slug FROM territories WHERE slug=? AND active=1 AND archived=0',text(body.territory_slug)||'victoria');
+  if(!terr) throw new Error('Local unavailable');
+  const zone=one('SELECT id FROM delivery_zones WHERE id=? AND territory_id=? AND active=1',text(body.zone_id),terr.id);
+  if(!zone) throw new Error('Choose your delivery area before placing the order.');
+  const trusted={...body,zone_id:zone.id};
+  delete trusted.lat; delete trusted.lng; delete trusted.address_lat; delete trusted.address_lng;
   delete trusted.delivery_fee; delete trusted.delivery_fee_cents;
-  if (!manual&&body.lat != null && body.lng != null) { trusted.address_lat = Number(body.lat); trusted.address_lng = Number(body.lng); }
-  if(!manual){trusted.delivery_fee_cents = int(quote.zone.fee_cents);trusted.delivery_discount_reason = text(quote.zone.delivery_discount_reason);}
-  if (!manual&&quote.override?.applied) trusted.zone_override_note = `Saved delivery exception${quote.override.note ? ': '+quote.override.note : ''}`;
-  const core = await corePublicPost('/api/public/orders', trusted);
-  if (core.status < 200 || core.status >= 300) return core;
-  const linked = linkOrderToCustomer(core.body.id);
-  if (text(body.fulfillment_type) && one('SELECT 1 FROM orders WHERE id=?', core.body.id)) run('UPDATE orders SET fulfillment_type=?,updated_at=? WHERE id=?', text(body.fulfillment_type), now(), core.body.id);
-  return { status: core.status, body: { ...core.body, customer_status: linked ? { returning_customer: linked.returning_customer, previous_order_count: linked.previous_order_count, order_count: linked.order_count } : null, delivery_override_applied: !!quote?.override?.applied } };
+  const core=await corePublicPost('/api/public/orders',trusted);
+  if(core.status<200||core.status>=300)return core;
+  const linked=linkOrderToCustomer(core.body.id);
+  if(text(body.fulfillment_type)&&one('SELECT 1 FROM orders WHERE id=?',core.body.id))run('UPDATE orders SET fulfillment_type=?,updated_at=? WHERE id=?',text(body.fulfillment_type),now(),core.body.id);
+  return {status:core.status,body:{...core.body,customer_status:linked?{returning_customer:linked.returning_customer,previous_order_count:linked.previous_order_count,order_count:linked.order_count}:null,delivery_override_applied:false}};
 }
 function saveZoneOverride(territoryId, b) {
   const type = ['address','street','customer'].includes(text(b.match_type)) ? text(b.match_type) : 'address';
@@ -1210,7 +1205,7 @@ function platformSettlementEntries(orders){
     const qty=platformOrderQty(o.id),rules=all('SELECT * FROM settlement_rules WHERE territory_id=? AND active=1 AND archived=0 ORDER BY sort_order',o.territory_id);
     for(const r of rules){
       let amount=0,targetType='',targetDriver=null,entryType='';const rate=int(r.amount_cents);
-      if(r.rule_type==='per_can_driver_to_boss'&&r.from_driver_id===o.assigned_driver_id){amount=qty*rate;targetType='boss';entryType='per_can_to_boss';}
+      if(r.rule_type==='per_can_driver_to_boss'&&r.from_driver_id===o.assigned_driver_id&&!one('SELECT is_company_owner FROM drivers WHERE id=?',o.assigned_driver_id)?.is_company_owner){amount=qty*rate;targetType='boss';entryType='per_can_to_boss';}
       else if(r.rule_type==='per_can_driver_to_driver'&&r.from_driver_id===o.assigned_driver_id){amount=qty*rate;targetType='driver';targetDriver=r.to_driver_id;entryType='per_can_to_driver';}
       else if(r.rule_type==='zone_fee_driver_to_driver'&&r.from_driver_id===o.assigned_driver_id&&r.zone_id===o.zone_id){amount=Math.min(rate,int(o.delivery_fee_cents));targetType='driver';targetDriver=r.to_driver_id;entryType='zone_fee_to_driver';}
       else if(r.rule_type==='zone_fee_to_driver'&&r.zone_id===o.zone_id&&r.to_driver_id){amount=rate===0?int(o.delivery_fee_cents):Math.min(rate,int(o.delivery_fee_cents));targetType='driver';targetDriver=r.to_driver_id;entryType='zone_fee_to_driver';}
@@ -1229,7 +1224,8 @@ function settlementPeriodReport(period) {
   const manualOffsite=tx.filter(x=>x.kind==='offsite_sale').reduce((s,x)=>s+int(x.qty),0),selfQty=tx.filter(x=>x.kind==='taken_for_self').reduce((s,x)=>s+int(x.qty),0),otherQty=tx.filter(x=>x.kind==='other_adjustment').reduce((s,x)=>s+int(x.qty),0);
   const accountable=webQty+offsiteOrderQty+manualOffsite;
   const bossOrderShare=entries.filter(x=>x.source_driver_id===period.driver_id&&x.target_type==='boss').reduce((s,x)=>s+int(x.amount_cents),0);
-  const bossRate=int(one("SELECT amount_cents FROM settlement_rules WHERE territory_id=? AND from_driver_id=? AND rule_type='per_can_driver_to_boss' AND active=1 AND archived=0 ORDER BY sort_order LIMIT 1",period.territory_id,period.driver_id)?.amount_cents);
+  const isCompanyOwner=!!one('SELECT is_company_owner FROM drivers WHERE id=?',period.driver_id)?.is_company_owner;
+  const bossRate=isCompanyOwner?0:int(one("SELECT amount_cents FROM settlement_rules WHERE territory_id=? AND from_driver_id=? AND rule_type='per_can_driver_to_boss' AND active=1 AND archived=0 ORDER BY sort_order LIMIT 1",period.territory_id,period.driver_id)?.amount_cents);
   const personalUseCharge=0,manualBossShare=manualOffsite*bossRate,bossShare=bossOrderShare+manualBossShare;
   const confirmedBossPayments=pays.filter(x=>['boss','company'].includes(x.destination_type)).reduce((s,x)=>s+int(x.amount_cents),0),manualBossCredits=tx.filter(x=>x.kind==='boss_credit').reduce((s,x)=>s+int(x.amount_cents),0),bossCredit=confirmedBossPayments+manualBossCredits;
   const calculatedNet=bossShare-bossCredit,adjustment=int(period.adjustment_cents),netBossDue=calculatedNet+adjustment,sendToBoss=Math.max(0,netBossDue),bossOwesDriver=Math.max(0,-netBossDue),cashInHand=pays.filter(x=>x.method==='cash'&&x.destination_type==='driver'&&(!x.destination_driver_id||x.destination_driver_id===period.driver_id)).reduce((s,x)=>s+int(x.amount_cents),0)+tx.filter(x=>x.kind==='cash_collected').reduce((s,x)=>s+int(x.amount_cents),0);
@@ -1254,9 +1250,6 @@ async function handlePlatform(req, res, url) {
   if (publicTerritoryUi && req.method === 'GET') {
     const x = publicTerritoryPlatform(decodeURIComponent(publicTerritoryUi[1]));
     return x ? send(res, 200, x) : send(res, 404, { error: 'City unavailable' });
-  }
-  if (url.pathname === '/api/platform/public/delivery-quote' && req.method === 'POST') {
-    return send(res, 200, resolveDeliveryQuote(await readBody(req)));
   }
   if (url.pathname === '/api/platform/public/orders' && req.method === 'POST') {
     const result = await createPublicPlatformOrder(await readBody(req));

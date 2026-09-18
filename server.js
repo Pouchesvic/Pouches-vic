@@ -490,11 +490,13 @@ if(fs.existsSync(DB_FILE)&&!fs.existsSync(PRE_LOCAL_BACKUP)){
   ['territories','small_orders_driver_id','TEXT'],
   ['territories','small_order_max_qty','INTEGER NOT NULL DEFAULT 4'],
   ['territories','same_day_cutoff_minutes','INTEGER NOT NULL DEFAULT 15'],
+  ['territories','delivery_map_image',"TEXT DEFAULT ''"],
   ['products','archived','INTEGER NOT NULL DEFAULT 0'],
   ['territory_products','local_price_override_cents','INTEGER'],
   ['drivers','archived','INTEGER NOT NULL DEFAULT 0'],
   ['drivers','customer_contact_number',"TEXT DEFAULT ''"],
   ['drivers','pin_hash',"TEXT DEFAULT ''"],
+  ['drivers','is_company_owner','INTEGER NOT NULL DEFAULT 0'],
   ['settlement_rules','archived','INTEGER NOT NULL DEFAULT 0'],
   ['settlement_rules','amount_cents','INTEGER'],
   ['settlement_rules','created_at','TEXT'],
@@ -602,7 +604,6 @@ function seed() {
     payment_card_connected: 'false',
     payment_paypal_connected: 'false',
     payment_crypto_connected: 'false',
-    mapbox_public_token: '',
     order_email_enabled: 'true',
     customer_discount_label: 'Customer Appreciation Discount',
     age_acknowledgement_text: 'I confirm that I meet the legal age requirement for this purchase.',
@@ -640,6 +641,30 @@ const victoriaRouting=one("SELECT * FROM territories WHERE slug='victoria'");
 if(victoriaRouting){const d1=one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name))='victoria driver 1' AND active=1 AND archived=0 LIMIT 1",victoriaRouting.id),d2=one("SELECT id FROM drivers WHERE territory_id=? AND lower(trim(name))='victoria driver 2' AND active=1 AND archived=0 LIMIT 1",victoriaRouting.id);if(d1)run('UPDATE territories SET main_driver_id=COALESCE(main_driver_id,?),default_driver_id=COALESCE(default_driver_id,?) WHERE id=?',d1.id,d1.id,victoriaRouting.id);if(d2)run('UPDATE territories SET small_orders_driver_id=COALESCE(small_orders_driver_id,?),small_order_max_qty=COALESCE(small_order_max_qty,4) WHERE id=?',d2.id,victoriaRouting.id);}
 finalOperations = createFinalOperations({ db, companyStock, now, id, text, int, bool, jsonText, safeJson, addOrderEvent });
 globalThis.pvFinalOperations = finalOperations;
+
+function ensureCompanyOwner() {
+  const pg=one("SELECT * FROM territories WHERE slug='prince-george' AND active=1 AND archived=0 LIMIT 1");
+  if(!pg) return null;
+  let owner=one('SELECT * FROM drivers WHERE is_company_owner=1 AND active=1 AND archived=0 LIMIT 1')
+    || one("SELECT * FROM drivers WHERE territory_id=? AND active=1 AND archived=0 ORDER BY CASE WHEN lower(name) LIKE '%prince george%' THEN 0 ELSE 1 END,created_at LIMIT 1",pg.id);
+  if(!owner){
+    const did=id(),t=now();
+    run(`INSERT INTO drivers(id,territory_id,name,active,archived,role,email,phone,customer_contact_number,notes,pin_hash,is_company_owner,created_at,updated_at)
+      VALUES(?,?,?,1,0,'operations_admin','','','','Company owner / Prince George','',1,?,?)`,did,pg.id,'Prince George Boss',t,t);
+    owner=one('SELECT * FROM drivers WHERE id=?',did);
+  }
+  run('UPDATE drivers SET is_company_owner=CASE WHEN id=? THEN 1 ELSE 0 END WHERE is_company_owner=1 OR id=?',owner.id,owner.id);
+  run("UPDATE drivers SET role='operations_admin',updated_at=? WHERE id=?",now(),owner.id);
+  run(`INSERT INTO driver_territory_memberships(driver_id,territory_id,role,active,can_manage_hours,created_at,updated_at)
+    VALUES(?,?,'supervisor',1,1,?,?)
+    ON CONFLICT(driver_id,territory_id) DO UPDATE SET role='supervisor',active=1,can_manage_hours=1,updated_at=excluded.updated_at`,owner.id,pg.id,now(),now());
+  run('UPDATE territories SET default_driver_id=?,main_driver_id=?,updated_at=? WHERE id=?',owner.id,owner.id,now(),pg.id);
+  setSetting('company_owner_driver_id',owner.id);
+  setSetting('company_home_territory_id',pg.id);
+  return one('SELECT * FROM drivers WHERE id=?',owner.id);
+}
+const COMPANY_OWNER=ensureCompanyOwner();
+
 driverInventory = createDriverInventory({ db, companyStock, now, id, text, int, jsonText });
 finalOperations.attachDriverInventory(driverInventory);
 supervisorLedger = createSupervisorLedger({ db, now, id, text, int });
@@ -906,14 +931,15 @@ function resolveDispatchDriver(territory,b,source,created_by_driver_id,requested
     return d?d.id:null;
   }
   if(source==='web'){
-    if(bool(b.manual_location))return null;
     return driverInventory.storefrontDriver(territory.id,{lane:text(b.storefront_lane),qty:requestedQty});
   }
   return null;
 }
 
 function createOrderCore(b,{source='web',created_by_role='customer',created_by_driver_id=null,allow_unlisted=false,auto_complete=false}={}) {
-  const territory=publicTerritory(text(b.territory_slug)||'victoria') || one('SELECT * FROM territories WHERE id=? AND active=1 AND archived=0',text(b.territory_id));
+  const territory=text(b.territory_id)
+    ? one('SELECT * FROM territories WHERE id=? AND active=1 AND archived=0',text(b.territory_id))
+    : publicTerritory(text(b.territory_slug)||'victoria');
   if(!territory) throw new Error('Territory unavailable');
   const items=resolveCart(territory,b.items,{allow_unlisted});
   const schedule=source==='web'?finalOperations.validateSchedule(b,territory):null;
@@ -927,9 +953,9 @@ function createOrderCore(b,{source='web',created_by_role='customer',created_by_d
   }
 
   let zone=null;
-  if(!bool(b.manual_location)&&b.zone_id) zone=one('SELECT * FROM delivery_zones WHERE id=? AND territory_id=? AND active=1',text(b.zone_id),territory.id);
+  if(b.zone_id) zone=one('SELECT * FROM delivery_zones WHERE id=? AND territory_id=? AND active=1',text(b.zone_id),territory.id);
   if(b.zone_id&&!zone) throw new Error('The selected delivery area is no longer available');
-  if(!zone && b.address_lng!=null && b.address_lat!=null) zone=detectZone(territory.id,num(b.address_lng),num(b.address_lat));
+  if(source==='web'&&!zone) throw new Error('Choose your delivery area before placing the order.');
   const deliveryOverride=b.delivery_fee_cents!=null?int(b.delivery_fee_cents):(b.delivery_fee!=null?cents(b.delivery_fee):null);
   const math=calculateOrder({territory,items,zone,delivery_fee_override_cents:deliveryOverride});
   if(source!=='web'&&b.sale_amount_cents!=null){const sale=Math.max(0,int(b.sale_amount_cents)),qty=Math.max(1,requestedQty);let assigned=0;items.forEach((x,index)=>{x.line_cents=index===items.length-1?sale-assigned:Math.round(sale*x.q/qty);x.unit_cents=Math.floor(x.line_cents/x.q);assigned+=x.line_cents;});math.subtotal_cents=sale;math.normal_delivery_fee_cents=0;math.delivery_fee_cents=0;math.delivery_savings_cents=0;math.delivery_discount_reason='';math.pre_discount_total_cents=sale;math.customer_discount_cents=0;math.total_cents=sale;}
@@ -977,8 +1003,7 @@ function createOrderCore(b,{source='web',created_by_role='customer',created_by_d
     if(status==='completed'){companyStock.finalizeOrder(oid,{role:created_by_role,driverId:created_by_driver_id});if(inventoryDriverId)driverInventory.finalizeOrder(oid);}
   });
   tx();
-  const dispatched=source==='web'&&territory.slug!=='victoria'?finalOperations.assignByVerifiedZone(oid):one('SELECT * FROM orders WHERE id=?',oid);
-  if(source==='web'&&dispatched?.assigned_driver_id&&inventoryDriverId&&dispatched.assigned_driver_id!==inventoryDriverId)driverInventory.reassignOrder(oid,dispatched.assigned_driver_id);
+  const dispatched=one('SELECT * FROM orders WHERE id=?',oid);
   if(status==='completed'){snapshotSettlementForOrder(oid);supervisorLedger.snapshotOrder(oid);}
   if(source==='web' && dispatched?.assigned_driver_id) sendDriverPush(dispatched.assigned_driver_id,oid).catch(console.error);
   if(source==='web')for(const watcher of all('SELECT driver_id FROM order_watchers WHERE order_id=?',oid))sendDriverPush(watcher.driver_id,oid).catch(console.error);
@@ -1020,7 +1045,7 @@ function snapshotSettlementForOrder(oid) {
     for(const r of rules){
       let amount=0, targetType='', targetDriver=null, entryType='';
       const rate=int(r.amount_cents??cents(r.amount));
-      if(r.rule_type==='per_can_driver_to_boss' && r.from_driver_id===o.assigned_driver_id){ amount=qty*rate; targetType='boss'; entryType='per_can_to_boss'; }
+      if(r.rule_type==='per_can_driver_to_boss' && r.from_driver_id===o.assigned_driver_id && !one('SELECT is_company_owner FROM drivers WHERE id=?',o.assigned_driver_id)?.is_company_owner){ amount=qty*rate; targetType='boss'; entryType='per_can_to_boss'; }
       else if(r.rule_type==='per_can_driver_to_driver' && r.from_driver_id===o.assigned_driver_id){ amount=qty*rate; targetType='driver'; targetDriver=r.to_driver_id; entryType='per_can_to_driver'; }
       else if(r.rule_type==='zone_fee_driver_to_driver' && r.from_driver_id===o.assigned_driver_id && r.zone_id===o.zone_id){ amount=Math.min(rate,int(o.delivery_fee_cents)); targetType='driver'; targetDriver=r.to_driver_id; entryType='zone_fee_to_driver'; }
       else if(r.rule_type==='zone_fee_to_driver' && r.zone_id===o.zone_id && r.to_driver_id){ amount=rate===0?int(o.delivery_fee_cents):Math.min(rate,int(o.delivery_fee_cents)); targetType='driver'; targetDriver=r.to_driver_id; entryType='zone_fee_to_driver'; }
@@ -1152,11 +1177,87 @@ function territorySnapshot(tid,lane='main') {
     WHERE tp.territory_id=? AND tp.listed=1 AND p.active=1 AND p.archived=0 AND di.sellable_qty>0
     ORDER BY tp.featured DESC,tp.sort_order,p.brand,p.flavor`,storefrontDriverId,tid):[];
   const windows=all('SELECT id,label,start_time,end_time,days_json,capacity,sort_order FROM delivery_windows WHERE territory_id=? AND active=1 ORDER BY sort_order,start_time',tid);
-  return {territory,storefront:{lane:text(lane)||'main',driver_id:storefrontDriverId,main_driver_id:territory.main_driver_id||territory.default_driver_id||null,small_orders_driver_id:territory.small_orders_driver_id||null,small_order_max_qty:Math.max(1,int(territory.small_order_max_qty,4))},tiers,zones,products,windows,settings:{mapbox_public_token:setting('mapbox_public_token',''),payment_cash_enabled:setting('payment_cash_enabled','true')==='true',payment_etransfer_enabled:setting('payment_etransfer_enabled','true')==='true',payment_methods:customerPaymentMethods(),customer_discount_label:setting('customer_discount_label','Customer Appreciation Discount'),minimum_order_qty:Math.max(1,int(setting('minimum_order_qty','1'),1)),round_down_to_cents:int(setting('round_down_to_cents','500'),500),age_acknowledgement_text:setting('age_acknowledgement_text','')}};
+  return {territory,storefront:{lane:text(lane)||'main',driver_id:storefrontDriverId,main_driver_id:territory.main_driver_id||territory.default_driver_id||null,small_orders_driver_id:territory.small_orders_driver_id||null,small_order_max_qty:Math.max(1,int(territory.small_order_max_qty,4))},tiers,zones,products,windows,settings:{payment_cash_enabled:setting('payment_cash_enabled','true')==='true',payment_etransfer_enabled:setting('payment_etransfer_enabled','true')==='true',payment_methods:customerPaymentMethods(),customer_discount_label:setting('customer_discount_label','Customer Appreciation Discount'),minimum_order_qty:Math.max(1,int(setting('minimum_order_qty','1'),1)),round_down_to_cents:int(setting('round_down_to_cents','500'),500),age_acknowledgement_text:setting('age_acknowledgement_text','')}};
 }
 function adminBootstrap() {
-  return {territories:all('SELECT * FROM territories ORDER BY archived,name'),settings:Object.fromEntries(all('SELECT key,value FROM settings').map(x=>[x.key,x.value]))};
+  const owner=one('SELECT id,name,territory_id FROM drivers WHERE is_company_owner=1 AND active=1 AND archived=0 LIMIT 1');
+  return {territories:all('SELECT * FROM territories ORDER BY archived,name'),company_owner:owner||null,settings:Object.fromEntries(all('SELECT key,value FROM settings').map(x=>[x.key,x.value]))};
 }
+function inventoryNetwork() {
+  for(const t of all('SELECT id FROM territories WHERE active=1 AND archived=0')) driverInventory.reconcileTerritory(t.id);
+  const catalog=companyStock.catalogList();
+  const locals=all('SELECT id,name,slug FROM territories WHERE active=1 AND archived=0 ORDER BY name').map(t=>{
+    const drivers=all(`SELECT DISTINCT d.id,d.name,d.is_company_owner
+      FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.territory_id=? AND m.active=1
+      WHERE d.active=1 AND d.archived=0 ORDER BY d.is_company_owner DESC,d.name`,t.id)
+      .map(d=>({driver:d,stock:driverInventory.snapshot(t.id,d.id)}));
+    const unassigned=[];
+    for(const p of catalog.catalog){
+      const area=p.territories.find(x=>x.id===t.id); if(!area) continue;
+      const physical=int(area.linked.physical)+int(area.independent.physical);
+      const allocated=drivers.reduce((sum,d)=>{
+        const r=d.stock.find(x=>x.product_id===p.id);
+        return sum+(r?int(r.sellable_qty)+int(r.reserved_qty)+int(r.check_stock_qty):0);
+      },0);
+      const qty=Math.max(0,physical-allocated);
+      if(qty) unassigned.push({product_id:p.id,brand:p.brand,flavor:p.flavor,strength:p.strength,qty});
+    }
+    return {territory:t,drivers,unassigned};
+  });
+  const reserve=catalog.catalog.filter(p=>int(p.company.reserve)>0).map(p=>({
+    product_id:p.id,brand:p.brand,flavor:p.flavor,strength:p.strength,qty:int(p.company.reserve)
+  }));
+  const grandTotal=catalog.catalog.reduce((sum,p)=>sum+int(p.company.linked_physical)+p.territories.reduce((n,a)=>n+int(a.independent.physical),0),0);
+  return {
+    company_home:one('SELECT id,name,slug FROM territories WHERE id=?',setting('company_home_territory_id',''))||one("SELECT id,name,slug FROM territories WHERE slug='prince-george'"),
+    owner:one('SELECT id,name,territory_id FROM drivers WHERE is_company_owner=1 LIMIT 1'),
+    grand_total_cans:grandTotal,
+    company_reserve:reserve,
+    locals
+  };
+}
+
+function ownerOverview(driver) {
+  if(!driver?.is_company_owner) return null;
+  const tid=driver.territory_id,week=weekStartMonday(),start=week.toISOString();
+  const orders=all("SELECT * FROM orders WHERE territory_id=? AND assigned_driver_id=? AND status='completed' AND completed_at>=? ORDER BY completed_at DESC",tid,driver.id,start);
+  const ids=orders.map(o=>o.id),marks=ids.map(()=>'?').join(',');
+  const payments=ids.length?all(`SELECT * FROM payments WHERE order_id IN (${marks}) AND status='received'`,...ids):[];
+  const received={cash:0,etransfer:0,other:0};
+  for(const p of payments){const k=p.method==='cash'?'cash':p.method==='etransfer'?'etransfer':'other';received[k]+=int(p.amount_cents);}
+  const localStock=all('SELECT sellable_qty,reserved_qty,check_stock_qty FROM driver_inventory WHERE driver_id=? AND territory_id=?',driver.id,tid)
+    .reduce((s,r)=>s+int(r.sellable_qty)+int(r.reserved_qty)+int(r.check_stock_qty),0);
+  return {
+    territory:one('SELECT id,name,slug FROM territories WHERE id=?',tid),
+    week_start:isoDate(week),
+    order_count:orders.length,
+    cans:orders.reduce((s,o)=>s+orderQty(o.id),0),
+    gross_sales_cents:orders.reduce((s,o)=>s+int(o.total_cents),0),
+    delivery_fees_cents:orders.reduce((s,o)=>s+int(o.delivery_fee_cents),0),
+    received_cents:received,
+    company_due_cents:0,
+    local_stock_cans:localStock,
+    recent_orders:orders.slice(0,20).map(o=>({id:o.id,order_no:o.order_no,total_cents:o.total_cents,completed_at:o.completed_at,customer_name:o.customer_name}))
+  };
+}
+
+function adjustDriverStock({driverId,territoryId,productId,qtyDelta,note,kind='manual_correction',role='admin',actorDriverId=null}) {
+  const delta=int(qtyDelta);
+  if(!delta) throw new Error('Stock change cannot be zero.');
+  if(!text(note)) throw new Error('Add a short reason for this stock change.');
+  if(!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',driverId,territoryId)) throw new Error('That driver does not belong to this Local.');
+  return db.transaction(()=>{
+    if(delta<0){
+      driverInventory.removeSellable({driverId,territoryId,productId,qty:-delta,type:kind,note});
+      companyStock.adjustTerritory({territoryId,productId,qtyDelta:delta,movementType:kind,driverId,note,role,driverSourceId:actorDriverId});
+    } else {
+      companyStock.adjustTerritory({territoryId,productId,qtyDelta:delta,movementType:kind,driverId,note,role,driverSourceId:actorDriverId});
+      driverInventory.addSellable({driverId,territoryId,productId,qty:delta,type:kind,note});
+    }
+    return driverInventory.ensureRow(driverId,territoryId,productId);
+  })();
+}
+
 function territoryAdmin(tid) {
   const territory=one('SELECT * FROM territories WHERE id=?',tid); if(!territory) return null;
   return {
@@ -1269,6 +1370,13 @@ const server=http.createServer(async(req,res)=>{
       const ext=path.extname(p).toLowerCase(),type=ext==='.webp'?'image/webp':ext==='.png'?'image/png':'image/jpeg';
       return send(res,200,fs.readFileSync(p),type,{'Cache-Control':'public, max-age=31536000, immutable'});
     }
+    const deliveryMapImage=url.pathname.match(/^\/delivery-maps\/([a-z0-9._-]+\.(?:webp|png|jpe?g))$/i);
+    if(deliveryMapImage&&req.method==='GET'){
+      const p=path.join(__dirname,'public','delivery-maps',deliveryMapImage[1]);
+      if(!fs.existsSync(p))return send(res,404,'Not found','text/plain; charset=utf-8');
+      const ext=path.extname(p).toLowerCase(),type=ext==='.webp'?'image/webp':ext==='.png'?'image/png':'image/jpeg';
+      return send(res,200,fs.readFileSync(p),type,{'Cache-Control':'public, max-age=31536000, immutable'});
+    }
     if(url.pathname==='/health') return send(res,200,{ok:true,time:now(),db:DB_FILE,email_configured:!!(RESEND_API_KEY&&ORDER_EMAIL_FROM)});
 
     // Public
@@ -1281,10 +1389,6 @@ const server=http.createServer(async(req,res)=>{
     if(pubTerr&&req.method==='GET'){
       const terr=publicTerritory(decodeURIComponent(pubTerr[1])); if(!terr)return send(res,404,{error:'Territory not found'});
       return send(res,200,territorySnapshot(terr.id,text(url.searchParams.get('lane'))||'main'));
-    }
-    if(url.pathname==='/api/public/zone-detect'&&req.method==='POST'){
-      const b=await bodyJson(req); const terr=publicTerritory(text(b.territory_slug)||'victoria'); if(!terr)return send(res,404,{error:'Territory not found'});
-      const z=detectZone(terr.id,num(b.lng),num(b.lat)); return send(res,200,{zone:z?{id:z.id,name:z.name,color_label:z.color_label,fee_cents:int(z.fee_cents??cents(z.fee)),free_at_qty:z.free_at_qty}:null});
     }
     if(url.pathname==='/api/public/orders'&&req.method==='POST'){
       const b=await bodyJson(req);
@@ -1347,8 +1451,18 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/api/admin/supervisor-accounts/clear'&&req.method==='POST'){const b=await bodyJson(req);return send(res,200,supervisorLedger.clearAccount({accountType:text(b.account_type),sourceDriverId:text(b.source_driver_id)||null,note:text(b.note),createdByRole:'admin'}));}
     const lifetimeRoute=url.pathname.match(/^\/api\/admin\/drivers\/([^/]+)\/lifetime$/);
     if(lifetimeRoute&&req.method==='PUT'){const b=await bodyJson(req);return send(res,200,finalOperations.setLifetimeDeliveries(decodeURIComponent(lifetimeRoute[1]),b.lifetime_deliveries,text(b.reason)));}
+    if(url.pathname==='/api/admin/inventory-network'&&req.method==='GET') return send(res,200,inventoryNetwork());
     if(url.pathname==='/api/admin/driver-inventory'&&req.method==='GET'){const tid=text(url.searchParams.get('territory_id'));if(!tid)throw new Error('Choose an area.');driverInventory.reconcileTerritory(tid);return send(res,200,{territory_id:tid,drivers:all('SELECT id,name FROM drivers WHERE active=1 AND archived=0').map(d=>({driver:d,stock:driverInventory.snapshot(tid,d.id)})).filter(x=>x.stock.length)});}
-    if(url.pathname==='/api/admin/driver-inventory/transfer'&&req.method==='POST'){const b=await bodyJson(req);driverInventory.transfer({fromDriverId:text(b.from_driver_id),toDriverId:text(b.to_driver_id),fromTerritoryId:text(b.from_territory_id),toTerritoryId:text(b.to_territory_id)||text(b.from_territory_id),productId:text(b.product_id),qty:int(b.qty),note:text(b.note)||'Physical handoff'});return send(res,200,{ok:true});}
+    if(url.pathname==='/api/admin/driver-inventory/transfer'&&req.method==='POST'){
+      const b=await bodyJson(req),fromTerritory=text(b.from_territory_id),toTerritory=text(b.to_territory_id)||fromTerritory,fromDriver=text(b.from_driver_id),toDriver=text(b.to_driver_id);
+      if(!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',fromDriver,fromTerritory)||!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',toDriver,toTerritory)) throw new Error('Choose valid source and destination drivers.');
+      driverInventory.transfer({fromDriverId:fromDriver,toDriverId:toDriver,fromTerritoryId:fromTerritory,toTerritoryId:toTerritory,productId:text(b.product_id),qty:int(b.qty),note:text(b.note)||'Physical handoff'});
+      return send(res,200,{ok:true});
+    }
+    if(url.pathname==='/api/admin/driver-inventory/adjust'&&req.method==='POST'){
+      const b=await bodyJson(req);
+      return send(res,200,adjustDriverStock({driverId:text(b.driver_id),territoryId:text(b.territory_id),productId:text(b.product_id),qtyDelta:int(b.qty_delta),note:text(b.note),kind:text(b.kind)||'manual_correction',role:'admin'}));
+    }
     if(url.pathname==='/api/admin/driver-inventory/check-stock'&&req.method==='POST'){const b=await bodyJson(req),driverId=text(b.driver_id),territoryId=text(b.territory_id),productId=text(b.product_id),qty=int(b.qty),found=bool(b.found);const result=db.transaction(()=>{driverInventory.resolveCheckStock({driverId,territoryId,productId,qty,found,note:text(b.note)});companyStock.resolveHeldCheckStock(territoryId,productId,qty,!!found,{role:'admin',driverId,note:text(b.note)||(found?'Stock found':'Confirmed missing')});return driverInventory.ensureRow(driverId,territoryId,productId);})();return send(res,200,result);}
 
     if(url.pathname==='/api/admin/bootstrap'&&req.method==='GET') return send(res,200,adminBootstrap());
@@ -1382,8 +1496,8 @@ const server=http.createServer(async(req,res)=>{
     const storefrontInfo=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/storefront-info$/);
     if(storefrontInfo&&req.method==='PUT'){
       const b=await bodyJson(req),tid=decodeURIComponent(storefrontInfo[1]);
-      run('UPDATE territories SET operating_hours=?,same_day_text=?,payment_note_text=?,updated_at=? WHERE id=?',
-        text(b.operating_hours),text(b.same_day_text)||'SAME-DAY DELIVERY',text(b.payment_note_text)||'No upfront payment — pay when your order arrives.',now(),tid);
+      run('UPDATE territories SET operating_hours=?,same_day_text=?,payment_note_text=?,delivery_map_image=?,updated_at=? WHERE id=?',
+        text(b.operating_hours),text(b.same_day_text)||'SAME-DAY DELIVERY',text(b.payment_note_text)||'No upfront payment — pay when your order arrives.',text(b.delivery_map_image),now(),tid);
       return send(res,200,{ok:true});
     }
     const mapCheck=url.pathname.match(/^\/api\/admin\/territories\/([^/]+)\/map-check$/);
@@ -1566,10 +1680,12 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/api/driver/login'&&req.method==='POST'){
       const rateKey=loginRateKey(req,'driver-login'),retry=loginRetrySeconds(rateKey);if(retry)return send(res,429,{error:'Too many failed login attempts. Try again later.'},'application/json; charset=utf-8',{'Retry-After':String(retry)});
       const b=await bodyJson(req); const d=one('SELECT * FROM drivers WHERE id=? AND active=1 AND archived=0',text(b.driver_id)); if(!d||!verifyPin(b.pin,d.pin_hash)){const wait=recordLoginFailure(rateKey);return wait?send(res,429,{error:'Too many failed login attempts. Try again later.'},'application/json; charset=utf-8',{'Retry-After':String(wait)}):send(res,401,{error:'Wrong driver or PIN'});}
+      const requestedTerritory=text(b.territory_id)||d.territory_id,membership=one('SELECT * FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',d.id,requestedTerritory);
+      if(!membership)return send(res,403,{error:'This driver is not assigned to that Local.'});
       if(!String(d.pin_hash).startsWith('scrypt$'))run('UPDATE drivers SET pin_hash=?,updated_at=? WHERE id=?',encodePin(b.pin),now(),d.id);
       clearLoginFailures(rateKey);
-      const tok=token();driverSessions.set(tok,{driver_id:d.id,territory_id:d.territory_id,created:Date.now()});
-      return send(res,200,{ok:true,driver:{id:d.id,name:d.name,territory_id:d.territory_id}},'application/json; charset=utf-8',{'Set-Cookie':`pv_driver_session=${tok}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`});
+      const tok=token();driverSessions.set(tok,{driver_id:d.id,territory_id:requestedTerritory,created:Date.now()});
+      return send(res,200,{ok:true,driver:{id:d.id,name:d.name,territory_id:requestedTerritory}},'application/json; charset=utf-8',{'Set-Cookie':`pv_driver_session=${tok}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`});
     }
     if(url.pathname==='/api/driver/logout'&&req.method==='POST'){
       const tok=parseCookies(req).pv_driver_session;if(tok)driverSessions.delete(tok); return send(res,200,{ok:true},'application/json; charset=utf-8',{'Set-Cookie':'pv_driver_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0'});
@@ -1587,7 +1703,12 @@ const server=http.createServer(async(req,res)=>{
         const products=territoryIds.length?all(`SELECT p.id,p.brand,p.flavor,p.strength,di.territory_id,di.sellable_qty inventory,tp.listed,di.reserved_qty,di.check_stock_qty FROM products p JOIN driver_inventory di ON di.product_id=p.id AND di.driver_id=? JOIN territory_products tp ON tp.product_id=p.id AND tp.territory_id=di.territory_id WHERE di.territory_id IN (${marks}) AND p.active=1 AND p.archived=0 ORDER BY p.brand,p.flavor`,driver.id,...territoryIds):[];
         const zones=territoryIds.length?all(`SELECT id,territory_id,name,fee_cents,fee,free_at_qty FROM delivery_zones WHERE territory_id IN (${marks}) AND active=1 ORDER BY sort_order,name`,...territoryIds):[];
         const territory_drivers=territoryIds.length?all(`SELECT d.id,d.name,m.territory_id,m.role membership_role,m.can_manage_hours FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id WHERE m.territory_id IN (${marks}) AND m.active=1 AND d.active=1 AND d.archived=0 ORDER BY d.name`,...territoryIds):[];
-        return send(res,200,{driver:{...driver,lifetime_deliveries:finalOperations.lifetimeDeliveries(driver.id)?.lifetime_deliveries||0},territory:one('SELECT * FROM territories WHERE id=?',driver.territory_id),memberships,territory_drivers,products,zones,orders,archived_orders,supervisor_accounts:supervisorLedger.mayDriverView(driver)?supervisorLedger.report():null,history_policy:{terminal_hours:12,archive_days:15}});
+        const canTransferStock=!!driver.is_company_owner||driver.role==='operations_admin'||memberships.some(m=>m.role==='supervisor');
+        const stock_transfer_targets=canTransferStock?all(`SELECT d.id,d.name,m.territory_id,t.name territory_name,t.slug territory_slug
+          FROM drivers d JOIN driver_territory_memberships m ON m.driver_id=d.id AND m.active=1
+          JOIN territories t ON t.id=m.territory_id AND t.active=1 AND t.archived=0
+          WHERE d.active=1 AND d.archived=0 ORDER BY t.name,d.name`):[];
+        return send(res,200,{driver:{...driver,lifetime_deliveries:finalOperations.lifetimeDeliveries(driver.id)?.lifetime_deliveries||0},territory:one('SELECT * FROM territories WHERE id=?',s.territory_id),memberships,territory_drivers,stock_transfer_targets,products,zones,orders,archived_orders,supervisor_accounts:supervisorLedger.mayDriverView(driver)?supervisorLedger.report():null,owner_overview:ownerOverview(driver),history_policy:{terminal_hours:12,archive_days:15}});
       }
       if(url.pathname==='/api/driver/local-hours'&&req.method==='GET'){
         const tid=text(url.searchParams.get('territory_id')),membership=one('SELECT * FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',driver.id,tid);if(!membership||!membership.can_manage_hours)return send(res,403,{error:'Admin has not enabled Local-hours access for this driver.'});
@@ -1637,6 +1758,32 @@ const server=http.createServer(async(req,res)=>{
         return send(res,200,{ok:true});
       }
 
+      if(url.pathname==='/api/driver/stock-transfer'&&req.method==='POST'){
+        const memberships=finalOperations.memberships(driver.id),allowed=!!driver.is_company_owner||driver.role==='operations_admin'||memberships.some(m=>m.role==='supervisor');
+        if(!allowed)return send(res,403,{error:'Stock transfer is only available to an authorized supervisor.'});
+        const b=await bodyJson(req),fromTerritory=text(b.from_territory_id),toTerritory=text(b.to_territory_id),toDriver=text(b.to_driver_id);
+        if(!memberships.some(m=>m.territory_id===fromTerritory))throw new Error('Choose a Local where you hold stock.');
+        if(!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',toDriver,toTerritory))throw new Error('Choose a valid destination driver.');
+        if(toDriver===driver.id&&toTerritory===fromTerritory)throw new Error('Choose a different destination.');
+        driverInventory.transfer({fromDriverId:driver.id,toDriverId:toDriver,fromTerritoryId:fromTerritory,toTerritoryId:toTerritory,productId:text(b.product_id),qty:int(b.qty),note:text(b.note)||'Supervisor stock handoff'});
+        return send(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/driver/company-inventory'&&req.method==='GET'){
+        if(!driver.is_company_owner) return send(res,403,{error:'Company inventory is only available to the company owner.'});
+        return send(res,200,inventoryNetwork());
+      }
+      if(url.pathname==='/api/driver/company-inventory/transfer'&&req.method==='POST'){
+        if(!driver.is_company_owner) return send(res,403,{error:'Company inventory is only available to the company owner.'});
+        const b=await bodyJson(req),toDriver=text(b.to_driver_id),toTerritory=text(b.to_territory_id);
+        if(!one('SELECT 1 FROM driver_territory_memberships WHERE driver_id=? AND territory_id=? AND active=1',toDriver,toTerritory)) throw new Error('Choose a valid destination driver.');
+        driverInventory.transfer({fromDriverId:driver.id,toDriverId:toDriver,fromTerritoryId:driver.territory_id,toTerritoryId:toTerritory,productId:text(b.product_id),qty:int(b.qty),note:text(b.note)||'Company stock shipment'});
+        return send(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/driver/company-inventory/adjust'&&req.method==='POST'){
+        if(!driver.is_company_owner) return send(res,403,{error:'Company inventory is only available to the company owner.'});
+        const b=await bodyJson(req),targetDriver=text(b.driver_id)||driver.id,targetTerritory=text(b.territory_id)||driver.territory_id;
+        return send(res,200,adjustDriverStock({driverId:targetDriver,territoryId:targetTerritory,productId:text(b.product_id),qtyDelta:int(b.qty_delta),note:text(b.note),kind:text(b.kind)||'owner_stock_correction',role:'driver',actorDriverId:driver.id}));
+      }
       if(url.pathname==='/api/driver/quick-sale'&&req.method==='POST'){
         const b=await bodyJson(req); b.territory_id=text(b.territory_id)||driver.territory_id;if(!finalOperations.memberships(driver.id).some(x=>x.territory_id===b.territory_id))throw new Error('You do not have access to that area.');b.assigned_driver_id=driver.id; const o=createOrderCore(b,{source:text(b.source)||'driver_offsite',created_by_role:'driver',created_by_driver_id:driver.id,allow_unlisted:true,auto_complete:b.status!=='open'}); await sendBusinessNewOrderNotification(o.id); return send(res,201,o);
       }
